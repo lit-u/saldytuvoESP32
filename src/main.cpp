@@ -192,9 +192,12 @@ bool initCamera() {
     // Dydis/rezoliucija VIENA nepatvirtina, kad tai realus vaizdas, ne
     // tuscias/juodas kadras (pvz. jei PWDN puse-istrigo arba FPC blogai
     // prijungtas) — DMA gali sekmingai uzpildyti buferi vien nuliais.
-    // Paprastas patikrinimas: suskaiciuoti ne-nulinius baitus is imties
-    // (kas 97-as baitas — pirminis skaicius, kad neatsitiktu pataikyti i
-    // pasikartojanti RGB565 zingsni per visa buferi).
+    // Paprastas patikrinimas: suskaiciuoti ne-nulinius baitus is imties.
+    // Zingsnis 97 SAMONINGAI nelyginis (ne atsitiktinis): RGB565 koduoja
+    // pikseli 2 baitais, tad LYGINIS zingsnis visada pataikytu i ta pacia
+    // (auksta arba zema) baito puse. Kadangi 97*n mod 2 = n mod 2, imtis
+    // GRIEZTAI kaitaliojasi tarp abieju baito pusiu kas karta — 50/50
+    // padengimas, ne sliuzimas.
     size_t sampled = 0, nonZero = 0;
     for (size_t i = 0; i < fb->len; i += 97) {
         sampled++;
@@ -205,8 +208,13 @@ bool initCamera() {
     Serial.printf("[Camera] Bandomasis kadras: %ux%u, %u baitu, ~%u%% ne-nuliniu baitu (imtis).\n",
                   fb->width, fb->height, (unsigned)fb->len, nonZeroPct);
     if (nonZeroPct == 0) {
-        Serial.println("[Camera] ISPEJIMAS: kadras atrodo VISISKAI TUSCIAS/JUODAS — "
-                        "patikrink PWDN valdyma (EXIO3) ir FPC kabelio prijungima.");
+        Serial.println("[Camera] ISPEJIMAS: kadras atrodo VISISKAI TUSCIAS/JUODAS. "
+                        "GALIMOS PRIEZASTYS: (a) kamera testo metu nukreipta i "
+                        "tamsu/uzdengta plota (stalvirsi, tamsu kambari) — TIKRAS "
+                        "vaizdas, ne klaida, arba (b) PWDN valdymas (EXIO3) / FPC "
+                        "kabelio prijungimas sugedes. Pries diagnozuojant hardware — "
+                        "nukreipk kamera i kontrastinga objekta (langa, spalvota "
+                        "daikta) ir bandyk vel.");
     }
 
     esp_camera_fb_return(fb);
