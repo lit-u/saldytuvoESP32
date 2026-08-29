@@ -1,0 +1,17 @@
+# PlatformIO build artefaktai ir priklausomybes (atsisiunciamos is naujo per "pio run")
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Slapti duomenys (WiFi slaptazodziai kode dabar yra placeholder'iai
+# src/main.cpp'e — jei kada perkelsi i atskira config faila, prideti cia)
+# secrets.h
