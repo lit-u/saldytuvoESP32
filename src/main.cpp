@@ -20,6 +20,7 @@
 #include <time.h>
 #include <Wire.h>
 #include <SD_MMC.h>
+#include <esp_camera.h>
 #include <lvgl.h>
 
 #include "io_extension.h"
@@ -54,6 +55,25 @@ static const int I2C_SCL_PIN = 7;
 static const int SD_CLK_PIN = 16;
 static const int SD_CMD_PIN = 43;
 static const int SD_D0_PIN = 44;
+
+// --- Kamera (OV5640, DVP sasaja) ---
+// PATIKRINTA pagal oficialu Waveshare BSP (esp32_s3_cam_ovxxxx.h,
+// BSP_CAMERA_DEFAULT_CONFIG makrosas): SCCB (I2C) EINA PER TA PACIA bendra
+// magistrale (IO7/IO8), ne per atskirus pin'us — todel sccb_i2c_port
+// naudoja jau vykdoma Wire.begin(), o pin_sccb_sda/scl = -1. PWDN valdomas
+// per CH32V003 EXIO3 (IO_EXTENSION_CAM_PWDN_PIN), NE tiesiogini GPIO.
+static const int CAM_XCLK_PIN = 38;
+static const int CAM_PCLK_PIN = 41;
+static const int CAM_VSYNC_PIN = 17;
+static const int CAM_HREF_PIN = 18;
+static const int CAM_D0_PIN = 45;
+static const int CAM_D1_PIN = 47;
+static const int CAM_D2_PIN = 48;
+static const int CAM_D3_PIN = 46;
+static const int CAM_D4_PIN = 42;
+static const int CAM_D5_PIN = 40;
+static const int CAM_D6_PIN = 39;
+static const int CAM_D7_PIN = 21;
 
 static lv_display_t *g_lcdDisplay = nullptr;
 
@@ -116,6 +136,61 @@ bool initSDCard() {
 
     uint64_t cardSizeMB = SD_MMC.cardSize() / (1024 * 1024);
     Serial.printf("[SD] Kortele rasta. Dydis: %llu MB\n", cardSizeMB);
+    return true;
+}
+
+bool initCamera() {
+    Serial.println("[Camera] Inicijuojama OV5640...");
+
+    // PWDN=0 -> kamera aktyvi. Butina PALAUKTI po EXIO komandos, kad
+    // sensorius spetu pilnai atsibusti pries SCCB (I2C) kalba.
+    IO_EXTENSION_Output(IO_EXTENSION_CAM_PWDN_PIN, 0);
+    delay(10);
+
+    camera_config_t config = {};
+    config.pin_pwdn = -1;      // valdoma per CH32V003 EXIO3, ne cia
+    config.pin_reset = -1;     // OV5640 sioje plokstej neturi atskiro RESET pin'o
+    config.pin_xclk = CAM_XCLK_PIN;
+    config.pin_sccb_sda = -1;  // SCCB per JAU VEIKIANCIA Wire magistrale
+    config.pin_sccb_scl = -1;
+    config.sccb_i2c_port = 0;  // Wire numatytasis I2C portas
+    config.pin_d7 = CAM_D7_PIN;
+    config.pin_d6 = CAM_D6_PIN;
+    config.pin_d5 = CAM_D5_PIN;
+    config.pin_d4 = CAM_D4_PIN;
+    config.pin_d3 = CAM_D3_PIN;
+    config.pin_d2 = CAM_D2_PIN;
+    config.pin_d1 = CAM_D1_PIN;
+    config.pin_d0 = CAM_D0_PIN;
+    config.pin_vsync = CAM_VSYNC_PIN;
+    config.pin_href = CAM_HREF_PIN;
+    config.pin_pclk = CAM_PCLK_PIN;
+    config.xclk_freq_hz = 20000000;
+    config.ledc_timer = LEDC_TIMER_0;
+    config.ledc_channel = LEDC_CHANNEL_0;
+    config.pixel_format = PIXFORMAT_RGB565;  // ateities veido atpazinimui, ne JPEG
+    config.frame_size = FRAMESIZE_QVGA;      // 320x240
+    config.jpeg_quality = 12;
+    config.fb_count = 2;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+
+    esp_err_t err = esp_camera_init(&config);
+    if (err != ESP_OK) {
+        Serial.printf("[Camera] KLAIDA: esp_camera_init() nepavyko (0x%x).\n", err);
+        return false;
+    }
+
+    // Vienkartinis bandomasis kadras — patikrinti, kad sensorius fiziskai
+    // gyvas, PRIES investuojant i veido atpazinimo integracija.
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb == nullptr) {
+        Serial.println("[Camera] KLAIDA: init pavyko, bet kadro paimti nepavyko.");
+        return false;
+    }
+    Serial.printf("[Camera] OK. Bandomasis kadras: %ux%u, %u baitu.\n",
+                  fb->width, fb->height, (unsigned)fb->len);
+    esp_camera_fb_return(fb);
     return true;
 }
 
@@ -190,6 +265,7 @@ void setup() {
     }
 
     initSDCard();
+    initCamera();
 
     initDisplay();
     Touch_FT6336_Init(Wire);
@@ -202,9 +278,8 @@ void setup() {
     // nedarome skirtumo tarp priezasciu, kad logika liktu paprasta.
     AppStateMachine_Update(true);
 
-    // TODO 1: initCamera() — OV5640 inicializavimas (esp_camera.h), kad
-    //         FaceRecognition_Identify() (face_recognition.cpp) galetu
-    //         gauti tikrus kadrus is esp_camera_fb_get().
+    // TODO 1: veido atpazinimo modelis (esp-who/ESP-DL) — face_recognition.cpp
+    //         dabar tik stub; kamera jau inicijuota ir kadra paduoti gali.
     // TODO 2: initWebServer() — ESPAsyncWebServer: MJPEG/stream endpoint,
     //         POST /api/message -> FamilyMessages_Set(), POST /api/brightness,
     //         POST /api/radar-distance (zr. app_state_machine.h TODO apie

@@ -13,6 +13,8 @@
  * Kanalu paskirtis (patvirtinta faktiniu kodu, ne vien schemos zymejimu):
  *   P0  -> Touch (FT6336) RESET
  *   P1  -> LCD (ST7796) RESET
+ *   P3  -> Kameros (OV5640) PWDN — patikrinta pagal "PIN OUT" lentele
+ *          schemoje (EXIO3 -> CAM_PWDN). PWDN=0 -> kamera aktyvi.
  *   PWM registro reiksme (0-100) -> LCD BACKLIGHT skaistis
  *   ADC registras -> baterijos itampa (BAT_ADC)
  */
@@ -30,6 +32,7 @@
 
 #define IO_EXTENSION_TOUCH_RST_PIN    0  // P0
 #define IO_EXTENSION_LCD_RST_PIN      1  // P1
+#define IO_EXTENSION_CAM_PWDN_PIN     3  // P3
 
 void IO_EXTENSION_Init(TwoWire &wire);
 void IO_EXTENSION_Output(uint8_t pin, uint8_t value);
