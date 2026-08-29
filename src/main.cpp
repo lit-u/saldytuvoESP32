@@ -188,8 +188,27 @@ bool initCamera() {
         Serial.println("[Camera] KLAIDA: init pavyko, bet kadro paimti nepavyko.");
         return false;
     }
-    Serial.printf("[Camera] OK. Bandomasis kadras: %ux%u, %u baitu.\n",
-                  fb->width, fb->height, (unsigned)fb->len);
+
+    // Dydis/rezoliucija VIENA nepatvirtina, kad tai realus vaizdas, ne
+    // tuscias/juodas kadras (pvz. jei PWDN puse-istrigo arba FPC blogai
+    // prijungtas) — DMA gali sekmingai uzpildyti buferi vien nuliais.
+    // Paprastas patikrinimas: suskaiciuoti ne-nulinius baitus is imties
+    // (kas 97-as baitas — pirminis skaicius, kad neatsitiktu pataikyti i
+    // pasikartojanti RGB565 zingsni per visa buferi).
+    size_t sampled = 0, nonZero = 0;
+    for (size_t i = 0; i < fb->len; i += 97) {
+        sampled++;
+        if (fb->buf[i] != 0) nonZero++;
+    }
+    uint8_t nonZeroPct = sampled ? (uint8_t)((nonZero * 100) / sampled) : 0;
+
+    Serial.printf("[Camera] Bandomasis kadras: %ux%u, %u baitu, ~%u%% ne-nuliniu baitu (imtis).\n",
+                  fb->width, fb->height, (unsigned)fb->len, nonZeroPct);
+    if (nonZeroPct == 0) {
+        Serial.println("[Camera] ISPEJIMAS: kadras atrodo VISISKAI TUSCIAS/JUODAS — "
+                        "patikrink PWDN valdyma (EXIO3) ir FPC kabelio prijungima.");
+    }
+
     esp_camera_fb_return(fb);
     return true;
 }
