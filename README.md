@@ -122,13 +122,28 @@ Veikimas: `AppStateMachine` po 15s neaktyvumo pati grįžta į STANDBY → `main
    - `CHIP_PU` (CH32V003 PA1) → tik ESP32-S3 reset/enable, likusi sistema (3V3, CH32V003) lieka gyva. **ESP32 pusės kodas šito PAT tiesiogiai nevaldo** (tai CH32V003→ESP32 linija, ne atvirkščiai) — paminėta tik kad ateityje nesupainiotume su BAT_EN skaitant schemą.
 7. **Patikrinti, ar CH32V003 gamyklinis firmware jau turi savo auto-power-off laikmatį, NEPRIKLAUSOMĄ nuo mūsų ESP32 kodo.** Matuojant srovę kelias minutes: jei ji krenta savaime, **užsirašyti TIKSLŲ laiką** iki kritimo ir palyginti su `SCREEN_AWAKE_TIMEOUT_MS` (15s, `app_state_machine.cpp:11`). Jei laikai sutampa — įtartina koincidencija (ESP32 kodas galėtų būti "matomas" per antrinį efektą). Jei laikai SKIRIASI (pvz. 30s, minutė) — tai įrodys du nepriklausomus, nesinchronizuotus mechanizmus (ESP32 deep sleep + CH32V003 savo laikmatis), kurie gali susikirsti (pvz. `esp_deep_sleep_start()` vykdomas tuo metu, kai CH32V003 jau nusprendžia kirsti maitinimą) — reikės arba išjungti vieną, arba juos suderinti.
 
+## Veido atpažinimas — TIKRAS statusas (svarbu neapsigauti)
+
+**`face_recognition.cpp` yra ir liks stub, kol nebus atliktas ATSKIRAS, savarankiškas darbo blokas.** Tai NE "beveik baigta, liko šiek tiek kodo" — tai sunkiausia, dar visiškai neišspręsta projekto dalis. `FaceRecognition_DebugForce(PERSON_WIFE)` leidžia rankiniu būdu trigerinti UI srautą testavimui — **su juo v1 yra UI/hardware demonstracija, NE funkcionuojantis atpažinimo įrenginys.** Naudinga validuoti ekranus/energiją/stabilumą, bet nepainioti su realiu produktu.
+
+**Kodėl neparašyta dabar — ištirti TRYS keliai, visi turi realias kliūtis (ne spėjimas, patikrinta faktais):**
+
+1. **ESP-WHO / ESP-DL** (oficialus Espressif sprendimas, aparatinis AI pagreitinimas, treniruoti modeliai) — **grynas ESP-IDF, ne Arduino.**
+2. **`framework = arduino, espidf` dual-mode** (kad galėtume naudoti #1 kartu su esamu Arduino kodu) — **išbandyta realiai** (`esp-dl-experiment` git šaka, GitHub). Build **SUBDUVO** su dviem konkrečiais blokeriais:
+   - `"Arduino framework as an ESP-IDF component doesn't handle the 'variant' field! The default 'esp32' variant will be used."` — ignoruotų mūsų ESP32-S3 OPI PSRAM/16MB flash nuostatas.
+   - Fatal CMake klaida: `esp32-arduino requires CONFIG_FREERTOS_HZ=1000 (currently 100)` — reikalautų rankinio `sdkconfig.defaults` derinimo.
+   - **Svarbu:** tai reiškia "šis konkretus kelias šiuo metu sulūžęs su šia konfigūracija", NE "veido atpažinimas neįmanomas šioje plokštėje". Jei grįši prie šito — pradėk NUO ŠITŲ DVIEJŲ konkrečių blokerių, ne nuo nulio.
+3. **TFLite-micro nuo nulio (be esp-who/esp-dl)** — techniškai suderinama su Arduino, BET realiai patikrinti pavyzdžiai arba (a) skirti kitoms plokštėms (pvz. `tflite-micro-arduino-examples` — Arduino Nano 33 BLE Sense, be to archyvuotas/nebepalaikomas nuo 2025-02), arba (b) ESP32-S3-specifiniai, bet ESP-IDF-only (`mauriciobarroso/mtcnn_esp32s3`). "ESP32 Haar cascade" paieškos rezultatai dažniausiai — **client-server architektūra** (ESP32 tik siunčia JPEG per WiFi, Python/OpenCV serveris atpažįsta) — **tiesiogiai prieštarauja projekto standalone reikalavimui**. Šis kelias reikštų savarankišką modelio parinkimą + preprocessing + integraciją nuo nulio — savaitės darbo, ne bibliotekos įdiegimas.
+
+**Kai grįši prie šito (atskira sesija, ne šios tąsa):** pirma nuspręsk TARP šitų kelių (arba ketvirto — du atskiri firmware su OTA/UART perjungimu, minėta bet netirta), ne bandyk kelis vienu metu.
+
 ## Kaip testuoti BE realios kameros/veido atpažinimo
 
 `face_recognition.h` turi `FaceRecognition_DebugForce(PERSON_WIFE)` — iškviesk ją (pvz. iš `setup()` arba per Serial komandą, kurią pats pridėsi) ir visa UI/state machine grandinė suveiks be jokio realaus atpažinimo modelio. Tai leidžia derinti LVGL ekranus dabar, nelaukiant kameros integracijos.
 
 ## Žinomos spragos / architektūriniai sprendimai, kuriuos reikės priimti
 
-1. **Veido atpažinimas** (`face_recognition.cpp`) — šiuo metu grąžina tik `PERSON_UNKNOWN`. **Kamera JAU inicijuota** (`initCamera()`, `main.cpp` — žr. žemiau), kadrus paduoti gali; trūksta TIK paties atpažinimo modelio (`esp-who`/ESP-DL). Du atskiri, nepriklausomi darbo blokai — kameros hardware bring-up ir atpažinimo algoritmas — sąmoningai atskirti debug'inimui (jei kas neveiks, žinosi, kurioje pusėje problema).
+1. **Veido atpažinimas** — žr. atskirą skyrių aukščiau ("Veido atpažinimas — TIKRAS statusas"). Kamera JAU inicijuota (`initCamera()`), kadrus paduoti gali; trūksta paties atpažinimo modelio.
 2. **LD2410 atstumo/jautrumo konfigūracija** ("judesys arčiau nei 1.2m") — **NEBEAKTUALU v1**: radaro kodas pilnai pašalintas (žr. "Radaras / PCF8574 (v2 galimybė)"). Jei radaras grįš v2, konfigūracija vis tiek bus derinama per gamintojo Bluetooth programėlę, ne ESP32 kodu.
 3. **Garso atkūrimas** (`greetingAudioFile`) — I2S kodekas (ES8311) dar neinicijuotas, `UI_ShowChildGreeting()`/`UI_ShowAdultGreeting()` turi TODO žymes atkūrimui.
 4. **Web serveris** — `family_messages.h` ir LCD ryškumo nustatymas (`LCD_Backlight_Set`) jau paruošti kaip funkcijos, kurias iškvies būsimi ESPAsyncWebServer `POST` handleriai. Patys HTTP endpoint'ai dar nerašyti.

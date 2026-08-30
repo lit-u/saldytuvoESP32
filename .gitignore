@@ -3,6 +3,12 @@
 .pioenvs/
 .piolibdeps/
 
+# ESP-IDF auto-generuojami failai (atsiranda, jei kas nors bando
+# framework=arduino,espidf dual-mode — zr. esp-dl-experiment saka/README)
+sdkconfig.*
+CMakeLists.txt
+src/CMakeLists.txt
+
 # IDE
 .vscode/
 .idea/
