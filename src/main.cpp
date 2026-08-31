@@ -35,8 +35,12 @@
 // ---------------------------------------------------------------------------
 
 // --- Wi-Fi ---
-static const char *WIFI_SSID = "TAVO_WIFI_SSID";
-static const char *WIFI_PASSWORD = "TAVO_WIFI_SLAPTAZODIS";
+// server-face-recognition saka: veido atpazinimas per laptopo serveri (zr.
+// README "Serveris-pagrindu atpazinimas") — WiFi PRIVALOMAS, ne pasirenkamas.
+// Tikri kredencialai include/secrets.h (NIEKADA necommit'inti — .gitignore).
+#include "secrets.h"
+static const char *WIFI_SSID = SECRET_WIFI_SSID;
+static const char *WIFI_PASSWORD = SECRET_WIFI_PASSWORD;
 
 // --- NTP / laiko sinchronizacija ---
 static const char *NTP_SERVER_1 = "pool.ntp.org";
@@ -165,13 +169,22 @@ bool initCamera() {
     config.pin_vsync = CAM_VSYNC_PIN;
     config.pin_href = CAM_HREF_PIN;
     config.pin_pclk = CAM_PCLK_PIN;
-    config.xclk_freq_hz = 20000000;
+    // server-face-recognition saka: JPEG (serveriui siunciamas tiesiogiai,
+    // nereikia konversijos). FRAMESIZE_SXGA (1280x1024) — PATIKRINTA 2026-08-31
+    // realiu testu: 640x480 (VGA) MTCNN VISAI NERADO veido serverio puseje
+    // (per mazai detaliu), o 1280 plocio nuotrauka atpazino teisingai per
+    // ~3s. Zemesne uz SXGA nerizikuoti be pakartotinio testo.
+    // xclk_freq_hz=10MHz + fb_count=1 PALIKTA is ankstesnio (eloquent-facelib-
+    // experiment sakos) rasto DMA/cam_task crash fix'o (RGB565+20MHz+fb_count=2
+    // sukeldavo "EV-EOF-OVF" -> Guru Meditation kas boot'a) — sios nuostatos
+    // patikrintos stabilios realiu hardware, nekeisti be priezasties.
+    config.xclk_freq_hz = 10000000;
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
-    config.pixel_format = PIXFORMAT_RGB565;  // ateities veido atpazinimui, ne JPEG
-    config.frame_size = FRAMESIZE_QVGA;      // 320x240
+    config.pixel_format = PIXFORMAT_JPEG;
+    config.frame_size = FRAMESIZE_SXGA;      // 1280x1024
     config.jpeg_quality = 12;
-    config.fb_count = 2;
+    config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
 
@@ -189,15 +202,13 @@ bool initCamera() {
         return false;
     }
 
-    // Dydis/rezoliucija VIENA nepatvirtina, kad tai realus vaizdas, ne
-    // tuscias/juodas kadras (pvz. jei PWDN puse-istrigo arba FPC blogai
-    // prijungtas) — DMA gali sekmingai uzpildyti buferi vien nuliais.
-    // Paprastas patikrinimas: suskaiciuoti ne-nulinius baitus is imties.
-    // Zingsnis 97 SAMONINGAI nelyginis (ne atsitiktinis): RGB565 koduoja
-    // pikseli 2 baitais, tad LYGINIS zingsnis visada pataikytu i ta pacia
-    // (auksta arba zema) baito puse. Kadangi 97*n mod 2 = n mod 2, imtis
-    // GRIEZTAI kaitaliojasi tarp abieju baito pusiu kas karta — 50/50
-    // padengimas, ne sliuzimas.
+    // PASTABA (JPEG formatas): suspaustas srautas beveik visada bus ~100%
+    // ne-nulinis nepriklausomai nuo realaus vaizdo turinio (net visiskai
+    // juodas kadras turi nemaza JPEG antrasciu/DC koeficientu baitu srauta).
+    // Sitas patikrinimas TIK patvirtina, kad apskritai gavome baitus, NE kad
+    // vaizdas ne juodas. Dydis/rezoliucija VIENA taip pat nepatvirtina —
+    // paprastas patikrinimas: suskaiciuoti ne-nulinius baitus is imties
+    // (zingsnis 97, nesvarbu formatui, paliktas is ankstesnio RGB565 etapo).
     size_t sampled = 0, nonZero = 0;
     for (size_t i = 0; i < fb->len; i += 97) {
         sampled++;
@@ -277,17 +288,19 @@ void setup() {
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     IO_EXTENSION_Init(Wire);
 
-    // PATAISYTA po pastabos: WiFi.begin() (iki 15s) + NTP sync (iki 10s)
-    // KIEKVIENA pabudima is deep sleep butu paneigie visa ext0/RTC-wake
-    // greicio nauda (~25s delsa vietoj "greito" pabudimo). ESP32-S3 sistemos
-    // laikrodis (settimeofday/SNTP nustatytas) ISLIEKA per deep sleep, nes
-    // RTC domenas nemiega — tad WiFi+NTP kviesim TIK saltam paleidimui
-    // (USB power-on/flash), NE kiekvienam mygtuko paspaudimui.
+    // server-face-recognition saka: WiFi DABAR BUTINAS kas pabudima (ne tik
+    // saltam paleidimui), nes veido atpazinimas vyksta per laptopo serveri
+    // (zr. lib/face_recognition/). Tai PANAIKINA anksciau cia buvusi
+    // optimizacija (WiFi tik saltam boot'ui) — sitas kompromisas SAMONINGAI
+    // priimtas kartu su visa client-server architektura, zr. README
+    // "Serveris-pagrindu atpazinimas": pabudimas dabar vel uztruks iki ~15s
+    // (WiFi.begin() timeout), o ne buves greitas ext0-wake. NTP sync vis
+    // dar praleidziamas pabudus mygtuku — laikrodis islieka RTC domene.
+    connectWiFi();
     if (!DeepSleep_WasWokenByButton()) {
-        connectWiFi();
         syncTime();
     } else {
-        Serial.println("[WiFi/NTP] Praleista — pabudimas is deep sleep, "
+        Serial.println("[NTP] Praleista — pabudimas is deep sleep, "
                         "sistemos laikrodis islikes is RTC domeno.");
     }
 

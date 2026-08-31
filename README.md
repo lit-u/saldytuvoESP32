@@ -143,7 +143,47 @@ Veikimas: `AppStateMachine` po 15s neaktyvumo pati grįžta į STANDBY → `main
 
 **Pataisymas dėl istorinio esp-face/ESP32-S3 klausimo (patikrinta tiesiogiai per GitHub API `tags`/`git/trees`, 2026-08-30):** anksčiau cituotas teiginys "esp-face pašalinta core 1.0.2 (~2019-2020), S3 palaikymas atsirado tik 2021-2022" yra **faktiškai neteisingas savo konkrečiomis detalėmis** — `fd_forward.h`/`fr_forward.h` realiai išgyveno VISĄ 1.x seriją (patikrinta: 1.0.1, 1.0.2, 1.0.6) IR net tag `2.0.0`. Tikslus išnykimo momentas: esp-face (bet kokiam čipui) dingo iš medžio tarp tag `2.0.0`→`2.0.1`, o `tools/sdk/esp32s3/` aplankas pirmą kartą atsirado tik tag `2.0.3` (tag `2.0.2` neturi nei vieno, nei kito). **Galutinė išvada NEPASIKEIČIA** — nė vienoje oficialioje `arduino-esp32` versijoje esp-face ir ESP32-S3 palaikymas realiai NESUTAPO — tik langas buvo daug siauresnis (viena versija), nei originaliai teigta. Tai jau nebesvarbu praktiškai, nes #4 (`EloquentEsp32cam`) sprendžia tą patį poreikį kitu, aktyviai palaikomu keliu.
 
-**Kai grįši prie šito (atskira sesija, ne šios tąsa):** pirma išbandyk #4 (`EloquentEsp32cam`) izoliuotoje šakoje su fiksuota core 2.x versija — tai labiausiai tikėtinas realus kelias. Jei nepavyks (pinout konfliktas, tikslumas per žemas), tik tada svarstyk #2/#3.
+**~~Kai grįši prie šito~~ — #4 IŠBANDYTA 2026-08-31 (`eloquent-facelib-experiment` šaka):** build pavyko, crash (RGB565/240x240/20MHz/fb_count=2 → `cam_hal EV-EOF-OVF` → Guru Meditation) rastas ir ištaisytas (JPEG+10MHz+fb_count=1), pipeline struktūriškai veikė be klaidų. BET realus aptikimo patikimumas **1/110 (~0.9%)** per visą vakaro testavimą — sistemingai atmesta: sensoriaus orientacija, fizinis plokštės pasukimas (0/90/180/270°), atstumas, WiFi-buvimo hipotezė (žr. [espressif/arduino-esp32#9671](https://github.com/espressif/arduino-esp32/issues/9671)). Šaka PALIKTA nepaliesta kaip istorinis įrašas — nemerge'inta į `main`, galima grįžti jei kada norėsis task/core-pinning eksperimento.
+
+## Veido atpažinimas — Serveris-pagrindu (v1.5, `server-face-recognition` šaka, 2026-08-31)
+
+**Po nesėkmingo on-device bandymo, vartotojo pasiūlymu, PRIIMTAS SĄMONINGAS nukrypimas nuo "standalone, be išorinio serverio" reikalavimo** — ESP32 tik fotografuoja ir POST'ina JPEG kadrą per WiFi į vartotojo laptopą, kuris (Flask + DeepFace, VGG-Face backend) atlieka atpažinimą ir grąžina JSON `{"name": ..., "distance": ...}`. Laptopas TURI būti įjungtas ir pasiekiamas tinkle — tai vertinama kaip validavimo etapas, ne būtinai galutinė v1 architektūra (nuolatinio veikimo klausimas, pvz. persikėlimas į visada įjungtą Raspberry Pi, sprendžiamas VĖLIAU).
+
+**Bibliotekos pasirinkimas (patikrinta per web paiešką):** DeepFace/VGG-Face, ne paprastesnis dlib pagrindu `face_recognition` — tiesioginiame palyginime ArcFace/VGG-Face žymiai patikimesni (0.90 vs 0.57 tikslumas), o VGG-Face specifiškai gerai atskiria brolius/seseris (>95%) — svarbu, nes yra 2 anūkės-seserys.
+
+### Kliūtys, kurias rado ir ištaisė (sąžininga eiga, ne tik galutinis rezultatas)
+
+1. **Python versijos konfliktas.** Sistemos Python 3.14 per naujas — TensorFlow neturi jam platinimo. Sprendimas: `uv venv --python 3.11` (naudojant sistemoje jau esantį Python 3.11.15 per `py` launcherį/Astral) — izoliuotas venv `server/venv/`, nesiliečia su sistemos Python.
+2. **`tf-keras` trūkstamas paketas** — Keras 3 + TensorFlow 2.21 reikalauja atskiro `tf-keras` suderinamumo paketo (RetinaFace/DeepFace vidinė priklausomybė). `pip install tf-keras`.
+3. **UnicodeEncodeError maskavo tikras klaidas.** DeepFace bando spausdinti emoji (🔴) į Windows konsolę (cp1252/charmap), kuri to nepalaiko — `UnicodeEncodeError` yra `ValueError` poklasis, tad mūsų `except ValueError` klaidingai jį interpretavo kaip "tuščia duomenų bazė". Sprendimas: paleisti serverį su `PYTHONIOENCODING=utf-8`.
+4. **opencv-python 5.0.0 neturi Haar cascade duomenų** (`cv2/data/` tik su `__init__.py`, be `.xml` failų) — DeepFace numatytasis `detector_backend="opencv"` dėl to lūžta. Sprendimas: `detector_backend="mtcnn"` (jau įdiegtas kaip DeepFace priklausomybė).
+5. **KRITINIS radinys — rezoliucijos/greičio kompromisas:**
+   - Pilnos rezoliucijos telefono nuotraukos (4224×5632, ~24MP) atpažino TEISINGAI ir TIKSLIAI (distance 0.05-0.08), bet **15-21 MINUTĘ per užklausą** (MTCNN+VGG-Face CPU inference ant itin didelio vaizdo) — visiškai nepriimtina realiam naudojimui.
+   - Sumažinus iki 640×480 (VGA, ESP32 kameros pradinė rezoliucija) — **MTCNN VISAI NERADO veido** (confidence=0.0, "veidas" = visas kadras — numatytasis rezultatas, kai nieko nerasta).
+   - **Saugus taškas: 1280px pločio** (SXGA, 1280×1024) — teisingai atpažino (distance=0.08) per **~3 sekundes**. `main.cpp` `initCamera()` naudoja `FRAMESIZE_SXGA` būtent dėl šito patikrinimo — NEMAŽINTI be pakartotinio testo.
+
+### Realaus hardware testas (2026-08-31, po SXGA pakeitimo)
+
+Visas pipeline'as (WiFi → kamera 1280×1024 JPEG → `HTTPClient` POST → serveris → JSON → `mapNameToPerson()`) veikia TECHNIŠKAI be klaidų — patvirtinta Serial log. Realaus ESP32 kadro atpažinimas per SCANNING langą (2.5s) kol kas grąžino `"unknown"` (2/2 bandymai) — GALIMOS priežastys (nepatikrinta): (a) FACE_SCAN_TIMEOUT_MS=2500ms per trumpas pozicionuotis, kaip ir on-device bandymuose; (b) ESP32 kameros vaizdo kokybė (JPEG quality=12, OV5640 objektyvas) skiriasi nuo telefono nuotraukų, sunkiau MTCNN'ui; (c) **testas vyko sutemus/silpname apšvietime** (vartotojo pastaba) — visos known_faces/ referencinės nuotraukos darytos dienos šviesoje, o MTCNN/VGG-Face jautrūs apšvietimui, tad tai gali būti pati tikėtiniausia priežastis, ne kodo/architektūros problema. **Pirmas dalykas kitam bandymui: pakartoti šviesiame kambaryje.** **Svarbus skirtumas nuo on-device bandymo:** kiekvienas bandymas dabar trunka ~1-3s (ne minutes), tad tolesnis derinimas gali vykti GREITAI kitą kartą.
+
+### Kaip paleisti serverį (kita sesija/kompiuteris)
+
+```
+cd server
+uv venv --python 3.11 venv
+uv pip install --python venv -r requirements.txt
+uv pip install --python venv tf-keras
+# idek 2-3 nuotraukas i known_faces/<Vardas>/ (Vardas = family_profiles.cpp displayName)
+PYTHONIOENCODING=utf-8 venv/Scripts/python.exe recognize_server.py
+```
+`include/secrets.h` (gitignored) turi `SECRET_SERVER_URL` su laptopo LAN IP (`ipconfig`/`Get-NetIPAddress`) — atnaujinti, jei laptopas prisijungia iš kito tinklo.
+
+### Kas toliau (kita sesija)
+
+- Pailginti SCANNING langą arba pridėti kitą testavimo mechanizmą (panašiai kaip `FACE_ENROLLMENT_SESSION` on-device eksperimente), kad būtų lengviau pozicionuotis prieš kamerą testuojant.
+- Palyginti realaus ESP32 kadro kokybę su telefono nuotraukomis (išsaugoti vieną ESP32 kadrą serverio pusėje debug'inimui).
+- Jei reikės daugiau greičio: ištirti, kodėl TensorFlow binaras neturi AVX2/FMA palaikymo šioje mašinoje (žinutė build metu) — galėtų dramatiškai pagreitinti VISAS operacijas nepriklausomai nuo rezoliucijos.
+- Registruoti realius šeimos narius (ne tik "Seimininkas") — `known_faces/<Vardas>/` su 2-3 nuotraukomis kiekvienam.
 
 ## Kaip testuoti BE realios kameros/veido atpažinimo
 

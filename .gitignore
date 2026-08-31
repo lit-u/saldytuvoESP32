@@ -18,6 +18,11 @@ src/CMakeLists.txt
 .DS_Store
 Thumbs.db
 
-# Slapti duomenys (WiFi slaptazodziai kode dabar yra placeholder'iai
-# src/main.cpp'e — jei kada perkelsi i atskira config faila, prideti cia)
-# secrets.h
+# Slapti duomenys — TIKRI WiFi/serverio kredencialai, niekada necommit'inti
+include/secrets.h
+
+# Serverio pusė (server/): asmeninės nuotraukos ir Python virtualenv, ne kodas
+server/known_faces/
+server/venv/
+server/__pycache__/
+server/*.pyc
