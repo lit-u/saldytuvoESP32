@@ -178,12 +178,61 @@ PYTHONIOENCODING=utf-8 venv/Scripts/python.exe recognize_server.py
 ```
 `include/secrets.h` (gitignored) turi `SECRET_SERVER_URL` su laptopo LAN IP (`ipconfig`/`Get-NetIPAddress`) — atnaujinti, jei laptopas prisijungia iš kito tinklo.
 
-### Kas toliau (kita sesija)
+### Kas toliau (buvo suplanuota, PAKEISTA — žr. sekantį skyrių)
 
-- Pailginti SCANNING langą arba pridėti kitą testavimo mechanizmą (panašiai kaip `FACE_ENROLLMENT_SESSION` on-device eksperimente), kad būtų lengviau pozicionuotis prieš kamerą testuojant.
-- Palyginti realaus ESP32 kadro kokybę su telefono nuotraukomis (išsaugoti vieną ESP32 kadrą serverio pusėje debug'inimui).
-- Jei reikės daugiau greičio: ištirti, kodėl TensorFlow binaras neturi AVX2/FMA palaikymo šioje mašinoje (žinutė build metu) — galėtų dramatiškai pagreitinti VISAS operacijas nepriklausomai nuo rezoliucijos.
-- Registruoti realius šeimos narius (ne tik "Seimininkas") — `known_faces/<Vardas>/` su 2-3 nuotraukomis kiekvienam.
+- ~~Ištirti laptopo tamsos/SCANNING lango problemą~~ — laptopas kaip serveris ATSISAKYTA (vartotojo sprendimas: "laptopo kaip serverio nebus, nesugebėjau pataisyti"), pereita prie Android telefono.
+
+## Android telefonas kaip serveris (2026-09-01, SĖKMINGAS GALUTINIS SPRENDIMAS)
+
+**Vietoj laptopo — Huawei P10 (VTR-L29, Android 9, EMUI 9.1.0) veikia kaip nuolat įjungtas atpažinimo serveris.** Šis kelias PILNAI PASITVIRTINO realiu hardware testu — žr. "Rezultatas" žemiau. Kodas: `android-server/` (Kotlin, Android Studio/Gradle projektas tame pačiame repo).
+
+### Svarbi pataisyta klaida (kito AI pokalbio, ne šio CC)
+
+Vartotojas atnešė pokalbį su kitu AI, kuris rekomendavo "Google ML Kit Face Detection" kaip sprendimą. **Patikrinta tiesiogiai (oficiali Google dokumentacija) 2026-09-01: tai KLAIDINGA supainiojimas.** ML Kit Face Detection **NEDARO atpažinimo** — tik APTIKIMĄ (kad kadre yra veidas, kontūrai/landmarks). Citata: *"the API detects faces, it does not recognize people."* Tikras sprendimas: ML Kit (veido regiono apkirpimui) + **atskiras TFLite embedding modelis** (MobileFaceNet) veido "parašui" apskaičiuoti ir palyginti — analogiškas DeepFace žingsniui, tik telefone per TensorFlow Lite.
+
+### Architektūra
+
+```
+ESP32-S3 (initCamera(), FRAMESIZE_SXGA JPEG)
+   |  HTTPClient POST -> http://<telefono-ip>:5000/recognize
+   v
+Android app (RecognitionForegroundService, NanoHTTPD embedded serveris)
+   |  FaceCropper (ML Kit — TIK aptikimas/apkirpimas)
+   v  FaceEmbedder (TFLite MobileFaceNet — 112x112 -> embedding vektorius)
+   v  EmbeddingStore (JSON faile, Euklido atstumas palyginimui)
+   |
+   <- JSON {"name": "Seimininkas", "distance": 1.116} arba {"name": "unknown"}
+```
+
+Ta pati API forma kaip laptopo Flask serveryje (`/recognize`, POST raw JPEG) — `face_recognition.cpp` ESP32 pusėje NEPASIKEITĖ, tik `SECRET_SERVER_URL` reikšmė `include/secrets.h`.
+
+### Aplinkos paruošimas nuo nulio (šioje mašinoje NEBUVO nieko, viskas įdiegta per šią sesiją)
+
+- **JDK:** `winget install --id Microsoft.OpenJDK.17` (admin nereikia).
+- **Android SDK:** rankinis `cmdline-tools` atsisiuntimas (`dl.google.com/android/repository/commandlinetools-win-*_latest.zip`), sudėti į `cmdline-tools/latest/`, `sdkmanager --licenses` (svarbu: reikia TIKROS `\n`-atskirtos "y" eilutės per `<` redirection, ne paprastas pipe — PowerShell pipe į `.bat` NEPERDUODA stdin patikimai per kelis interaktyvius promptus).
+- **Gradle:** `choco install` NEPAVYKO (reikalauja admin/lock teisių, kurių nėra) — vietoj to tiesioginis `services.gradle.org/distributions/gradle-8.4-bin.zip` atsisiuntimas ir išpakavimas į `$HOME/gradle-dist/`.
+- **KRITINĖ klaida ir pataisymas:** `local.properties` `sdk.dir=C\:\Users\...` (viena `\`) — Java Properties formatas SUPRANTA `\U`, `\O` ir kt. kaip **nepažįstamus escape'us ir TYLIAI IŠMETA backslash'ą**, sugadindamas kelią į `C:UsersOldBoyAndroidSdk` (be jokių separatorių) → `IOException: filename... syntax is incorrect`. Sprendimas: `sdk.dir=C:/Users/OldBoy/Android/Sdk` (paprasti `/`, be escaping problemų).
+- **Git Bash (MSYS) kelio konversija trukdo Gradle/Java subprocess'ams** — tie patys build'ai per Git Bash ir per PowerShell davė skirtingas klaidas dėl POSIX↔Windows kelio maišymosi. **Sprendimas: Android build'ai visada per PowerShell**, ne Git Bash.
+- **compileSdk 33 → 34** — `androidx.core:core-ktx:1.12.0`/`androidx.activity:1.8.0` reikalauja compileSdk 34+ (AAR metadata patikrinimas atmetė build'ą su aiškiu paaiškinimu — lengva pataisyti, tiesiog `platforms;android-34` + `build-tools;34.0.0` papildomai įdiegti).
+- **MobileFaceNet modelis:** `MCarlomagno/FaceRecognitionAuth` repo `assets/mobilefacenet.tflite` (5.2MB, tiesiogiai atsisiunčiamas per GitHub raw URL, jau paruoštas mobiliam naudojimui).
+- **adb per USB:** telefone reikia įjungti Developer options (7x paspausti "Build number") + USB debugging.
+
+### Rezultatas — REALIU HARDWARE PATVIRTINTA 2026-09-01
+
+1. Build sėkmingas, APK (65MB) įdiegtas į P10 per `adb install`, paleista be crash'ų (patikrinta `logcat` + ekrano nuotraukomis per `adb screencap`).
+2. Serveris paleistas telefone (mygtukas UI), pasiekiamas per WiFi iš kito įrenginio (`curl http://192.168.43.51:5000/health` → `{"status":"ok"}`).
+3. Registravimas per `/enroll?name=Seimininkas` (arba tiesiai programėlės UI: įvesti vardą + pasirinkti nuotrauką iš galerijos) — veikia.
+4. **Pirmas atpažinimo bandymas grąžino `"unknown"`, bet log'e matėsi TIKROJI priežastis:** `"Veidas rastas, bet neatpažintas (atstumas=1.1041604)"` — veidas TEISINGAI aptiktas ir embedduotas, tik pradinis `DISTANCE_THRESHOLD=1.0f` buvo per griežtas. Pakoreguota į `1.3f` (dar nepatikrinta prieš SKIRTINGUS žmones — false-positive rizika nežinoma, tik prieš vieną asmenį kol kas).
+5. **Po pataisymo: sėkmingas atpažinimas su NAUJA, mažiau šviesia nuotrauka** (vartotojo pastaba apie tamsą pasitvirtino kaip reali problema ankstesniuose testuose): `{"name":"Seimininkas","distance":1.1161173582077026}`, ~9.5s.
+6. **PILNAS end-to-end testas su TIKRU ESP32 hardware:** `secrets.h` `SECRET_SERVER_URL` atnaujintas į telefono IP, ESP32 reflash'intas, Serial log parodė: `[FaceRecognition] Serveris: name="Seimininkas" -> Seimininkas` — ESP32 → WiFi → telefonas → ML Kit+TFLite → teisingas atsakymas → teisingai susietas su `RecognizedPerson` enum. **VISA GRANDINĖ VEIKIA.**
+
+### Kas toliau
+
+- Užregistruoti realius šeimos narius (ne tik "Seimininkas") — per programėlės UI arba `/enroll` endpoint'ą.
+- Patikrinti `DISTANCE_THRESHOLD=1.3f` su SKIRTINGAIS žmonėmis (ar neatpažįsta klaidingai svetimo kaip šeimos nario) — kol kas tik patikrinta, kad TEISINGAS atpažinimas praeina, NE kad neteisingas atmetamas.
+- `FACE_SCAN_TIMEOUT_MS=2500ms` per trumpas realiam HTTP round-trip laikui (5-10s telefono atveju) — realiai per SCANNING langą įvyksta tik VIENAS bandymas, ne keli kaip on-device architektūroje. Apsvarstyti, ar timeout konstanta vis dar prasminga, ar tiesiog leisti vienam blokuojančiam kvietimui nuspręsti.
+- Telefono baterijos/šilumos elgesys nuolat veikiant kaip serveriui, prijungtam prie kroviklio, dar nepatikrintas ilgu laikotarpiu.
+- `RecognitionForegroundService` START_STICKY — patikrinti, ar realiai išgyvena ilgesnį laiką ekranui išjungus (Android battery optimization gali vis tiek užmušti procesą priklausomai nuo Huawei EMUI agresyvaus energijos valdymo — žinoma EMUI problema kitiems background app'ams, nepatikrinta šiam konkrečiam atvejui).
 
 ## Kaip testuoti BE realios kameros/veido atpažinimo
 
