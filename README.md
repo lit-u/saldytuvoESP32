@@ -236,20 +236,57 @@ Po ~14 vartotojo nuotraukų (įvairus apšvietimas/kampas/amžius/išraiška, ž
 
 **Bandytas pataisymas (FaceCropper.kt):** originalus `mobilefacenet.tflite` šaltinis (`MCarlomagno/FaceRecognitionAuth`) naudoja (a) 10px paraštę aplink ML Kit stačiakampį (mūsų nebuvo), (b) `copyResizeCropSquare` (kerpa iki kvadrato be iškraipymo, mūsų kodas tiesiog "ištempdavo" iki 112×112) ir (c) slenkstį `0.5`, ne 1.3! Pridėjome proporcingą 15% paraštę + kvadratinį apkirpimą prieš resize.
 
-**Rezultatas po pataisymo — MIŠRUS, NE aiškus laimėjimas:** pakartotinai testuojant TAS PAČIAS sūnaus nuotraukas: 1 atvejis pasitaisė (1.2847→1.3218, tapo teisingas), 1 pablogėjo (1.2533→1.2004, giliau į klaidą), kiti be reikšmingo pokyčio. **Sūnaus klaidingo priėmimo problema IŠLIEKA** po pataisymo.
-
-**Išvada:** tai NE apkirpimo/slenksčio derinimo problema, o greičiausiai **fundamentalus MobileFaceNet (lengvo, mobiliam optimizuoto modelio) skiriamosios gebos ribotumas** giminaičiams/panašiems veidams atskirti — atitinka ANKSTESNĮ šio projekto tyrimą (VGG-Face 0.90 vs Dlib 0.57 tiesioginiame palyginime, VGG-Face >95% specifiškai broliams/seserims). **Vartotojas linksta grįžti prie VGG-Face** (laptopo `server/` kelias jau veikė gerai su 1280px nuotraukomis vakar) — klausimas, ant kokio NUOLAT ĮJUNGTO įrenginio (ne laptopo, kurio atsisakyta dėl patikimumo, galbūt Raspberry Pi) tai paleisti. **Šis tyrimas bus atskiroje šakoje** (pvz. `vgg-face-alternative-server`), kad dabartinis (netobulas, bet veikiantis, žinomas) telefono/MobileFaceNet sprendimas liktų saugus atsarginis variantas šioje šakoje.
+**Rezultatas po apkirpimo pataisymo — MIŠRUS, NE aiškus laimėjimas:** pakartotinai testuojant TAS PAČIAS sūnaus nuotraukas: 1 atvejis pasitaisė, 1 pablogėjo, kiti be reikšmingo pokyčio. Vien apkirpimo/parametrų derinimas NEIŠSPRENDĖ problemos.
 
 ### `/test` debug endpoint'as (pridėta 2026-09-02)
 
 `GET /test` — HTML puslapis (embeduotas tiesiai `RecognitionServer.kt`, tas pats origin kaip API, jokių CORS problemų), leidžiantis rankiniu būdu pasirinkti nuotrauką bet kuriame įrenginyje to paties tinklo naršyklėje ir iškart pamatyti `/recognize` atsakymą + laiką. TIK testuoja, NIEKADA neregistruoja (skiriasi nuo `/enroll`). Naudinga statistikos rinkimui be manualaus `curl`/failų perkėlimo.
 
+## `arcface-experiment` šaka (2026-09-02) — ArcFace paieška ir modelio pakeitimas
+
+**Tikslas:** rasti stipresnį TFLite modelį (teoriškai ArcFace klasės), veikiantį TOJE PAČIOJE architektūroje (telefonas + NanoHTTPD + ML Kit), pakeičiant TIK `.tflite` failą.
+
+### Ieškoti ArcFace TFLite modeliai — VISI TRYS PATIKRINTI ŠALTINIAI NETINKAMI
+
+1. **`mobilesec/arcface-tensorflowlite`** (ResNet50, LFW 96.87%) — **atsisiuntimo nuoroda MIRUSI** (`https://cloud.ins.jku.at/...` grąžina HTTP 404). Patikrinta tiesiogiai per paties paketo (`pip install arcface`) oficialų atsisiuntimo kodą (`astropy.utils.data.download_file`), ne tik naršyklę — universiteto Nextcloud saitas nebeegzistuoja, jokio GitHub Release'o su binariu atsarginiu variantu nėra. Fork'as `bglgwyng/arcface-tensorflowlite` turi TĄ PAČIĄ mirusią nuorodą (nekopijuoja paties failo).
+2. **`felixrosberg/ArcFace`** (HuggingFace) — tik `.h5` (Keras), reikėtų konvertuoti į TFLite patiems.
+3. **`garavv/arcface-onnx`** (HuggingFace) — tik `.onnx`, irgi reikėtų konvertuoti.
+
+**Išvada:** patogiai, tiesiogiai atsisiunčiamo ir paruošto naudoti "tikro" ArcFace (ResNet klasės) TFLite modelio internete NĖRA — arba nuorodos mirusios, arba reikalauja rimto konvertavimo darbo (neatlikta šią sesiją).
+
+### Rastas ir sėkmingai pritaikytas alternatyvus MobileFaceNet variantas
+
+`syaringan357/Android-MobileFaceNet-MTCNN-FaceAntiSpoofing` repo turi **tiesiogiai commit'intą** `MobileFaceNet.tflite` (aprašytas kaip "MobileFaceNet su InsightFace loss" — t.y. TA PATI lengva architektūra kaip anksčiau, bet kitaip treniruota, su ArcFace principo nuostolio funkcija). NE tikras ResNet-ArcFace, bet realus, veikiantis, kitaip treniruotas kandidatas.
+
+**Du techniniai pataisymai, reikalingi šiam modeliui integruoti** (`FaceEmbedder.kt`):
+1. **Batch dydis = 2, ne 1** — šis modelis tikisi DVIEJŲ nuotraukų vienu metu (`[2, 112, 112, 3]` įvestis, `[2, 192]` išvestis), skirtingai nuo pirmojo modelio. Sprendimas: dubliuoti tą patį vaizdą į abi "vietas", imti tik pirmą išvesties eilutę. Kodas dabar skaito batch dydį DINAMIŠKAI iš modelio, tad veikia su abiem variantais.
+2. **Trūko L2 normalizacijos** — šis modelis, skirtingai nuo pirmojo (kuris savaime grąžindavo L2=1.0 vektorių, patikrinta anksčiau), NEnormalizuoja išvesties pats. Be normalizacijos atstumai buvo absurdiški (29–54, vietoj tikėto 0–2 diapazono). Pridėta universali `l2Normalize()` po inferencijos (nekenkia jau normalizuotam modeliui, būtina nenormalizuotam) — atitinka referencinio `arcface` Python paketo pačio kodą (`l2_norm(output_data)`).
+
+### Realaus testavimo rezultatai — REALUS, BET NEPILNAS PAGERĖJIMAS
+
+Palyginus TAS PAČIAS nuotraukas su seno ir naujo modelio:
+- Sūnaus nuotraukos: klaidingo priėmimo rodiklis sumažėjo (keli anksčiau klystantys atvejai dabar teisingi), bet **2 iš 5 vis dar klaidingai priimami** — TOS PAČIOS 2 konkrečios nuotraukos klysta VISUOSE trijuose šią sesiją bandytuose modelio variantuose (nuoseklu, ne atsitiktinumas).
+- Vartotojo paties ribiniai atvejai (anksčiau ties 1.3+ riba) — keli dabar aiškiai PATOBULĖJO (pvz. viena nuotrauka: 1.335→1.237, iš nepavykusios į sėkmingą).
+- **Vartotojo subjektyvus įspūdis (jo paties platesnio testavimo, ne tik man parodytų pavyzdžių):** naujas modelis nuosekliai atmeta DAUG svetimų žmonių, kuriuos senasis modelis KLAIDINGAI priimdavo kaip "Seimininkas". Mano matoma imtis (specifiškai sunkūs/panašūs atvejai) nerodė šito pilnai — svarbu neapsigauti siaura, tendencingai sunkia imtimi.
+- Viena visiškai negiminanti moteris IR vienas panašaus amžiaus/išvaizdos vyras irgi buvo klaidingai priimti net su nauju modeliu — problema NĖRA vien giminystė, tai bendras precizijos/slenksčio klausimas.
+
+**Bendra išvada:** realus, patvirtintas pagerėjimas, bet NE pilnas sprendimas. `DISTANCE_THRESHOLD=1.3f` liko nepakeistas šią sesiją — kito karto darbas: perskaičiuoti tinkamą slenkstį pagal PLATESNĮ, dabar surinktą duomenų kiekį.
+
+### NEIŠBANDYTA šią sesiją (ChatGPT pasiūlyti kandidatai, TIKRINTI KITĄ KARTĄ)
+
+Vartotojas gavo papildomų pasiūlymų iš ChatGPT — SĄMONINGAI nutraukta šiandien, bet BŪTINA patikrinti kitą sesiją:
+1. **Qualcomm AI Hub MobileFaceNet** (112×112, 128-D embedding, <1mln parametrų, ArcFace loss, deklaruojama 99.48% LFW) — aiškiausiai apibrėžta architektūra iš visų pasiūlytų, BET modelis pateiktas kaip `.pt` (PyTorch), ne paruoštas `.tflite` — reikėtų konvertavimo.
+2. **Seeed Vision Face Embedding projektas** — MobileFaceNet→TFLite, orientuotas į TensorFlow Lite Micro (t.y. GALIMAI tinka tiesiogiai ESP32-S3!). `.tflite` failai NĖRA GitHub'e — reikia generuoti patiems arba rasti release'uose.
+3. **GhostFaceNet** (112×112, 512-D, ArcFace variantas, deklaruojama 99.78% LFW) — turi paruoštus `.tflite` failus (float16/int8), BET naudoja SELECT_TF_OPS/Flex operacijas, kurios GALI NEBŪTI palaikomos paprastame TFLite Micro (ESP32) ar net standartiniame Android TFLite runtime be papildomos konfigūracijos — PATIKRINTI PRIEŠ naudojant.
+4. **Įdomi architektūros idėja iš ChatGPT:** ESP32-S3 (8MB PSRAM) PATS galėtų skaičiuoti embedding'ą per TFLite Micro (ne siųsti visą JPEG telefonui) — telefonas tik saugotų/lygintų embedding'us. Tai KITAS, dar nebandytas kelias nei mūsų ankstesnis on-device bandymas (kuris naudojo EloquentEsp32cam/ESP-DL, NE MobileFaceNet per TFLite Micro tiesiogiai) — verta atskiro tyrimo, ne šios sesijos apimtis.
+
 ### Kas toliau
 
-- **Nauja šaka VGG-Face tyrimui** ant nuolat įjungto įrenginio (ne laptopo) — kitas žingsnis.
-- Užregistruoti realius šeimos narius (ne tik "Seimininkas") — per programėlės UI arba `/enroll` endpoint'ą — ATIDĖTA, kol neišspręstas modelio tikslumo klausimas.
-- `DISTANCE_THRESHOLD=1.3f` patvirtinta NEPAKANKAMAI saugus giminaičiams/panašiems veidams atskirti su MobileFaceNet.
-- `FACE_SCAN_TIMEOUT_MS=2500ms` per trumpas realiam HTTP round-trip laikui (5-10s telefono atveju) — realiai per SCANNING langą įvyksta tik VIENAS bandymas, ne keli kaip on-device architektūroje. Apsvarstyti, ar timeout konstanta vis dar prasminga, ar tiesiog leisti vienam blokuojančiam kvietimui nuspręsti.
+- **PIRMA:** patikrinti ChatGPT pasiūlytus kandidatus (aukščiau) — ypač Qualcomm 128-D ir Seeed Vision (TFLite Micro orientuotas).
+- Perskaičiuoti `DISTANCE_THRESHOLD` pagal pilną šią sesiją surinktą duomenų kiekį (dešimtys bandymų su nauju modeliu).
+- Užregistruoti realius šeimos narius (ne tik "Seimininkas") — ATIDĖTA, kol modelio klausimas aiškesnis.
+- Apsvarstyti KELIŲ registruotų pavyzdžių įtaką (dabar tik 1 embedding vienam vardui).
+- `FACE_SCAN_TIMEOUT_MS=2500ms` per trumpas realiam HTTP round-trip laikui (5-10s telefono atveju) — realiai per SCANNING langą įvyksta tik VIENAS bandymas, ne keli kaip on-device architektūroje.
 - Telefono baterijos/šilumos elgesys nuolat veikiant kaip serveriui, prijungtam prie kroviklio, dar nepatikrintas ilgu laikotarpiu.
 - `RecognitionForegroundService` START_STICKY — patikrinti, ar realiai išgyvena ilgesnį laiką ekranui išjungus (Android battery optimization gali vis tiek užmušti procesą priklausomai nuo Huawei EMUI agresyvaus energijos valdymo — žinoma EMUI problema kitiems background app'ams, nepatikrinta šiam konkrečiam atvejui).
 

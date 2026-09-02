@@ -18,37 +18,63 @@ import java.nio.channels.FileChannel
 class FaceEmbedder(context: Context) {
     private val interpreter: Interpreter
     private val inputSize: Int
+    private val batchSize: Int
     val embeddingSize: Int
 
     init {
         val model = loadModelFile(context, "mobilefacenet.tflite")
         interpreter = Interpreter(model)
 
-        val inputShape = interpreter.getInputTensor(0).shape() // [1, H, W, 3]
+        // PATIKRINTA 2026-09-02: kai kurie MobileFaceNet/InsightFace konvertavimai
+        // (pvz. syaringan357 variantas) tikisi batch=2 (skirtas TIESIOGINIAM poru
+        // palyginimui), ne batch=1 kaip musu originalus MCarlomagno saltinis.
+        // Skaitome dinamiskai, kad veiktu abu atvejai — dubliuojame ta pati vaizda
+        // i visas batch "vietas" ir imame TIK pirma isvesties eilute.
+        val inputShape = interpreter.getInputTensor(0).shape() // [batch, H, W, 3]
+        batchSize = inputShape[0]
         inputSize = inputShape[1]
 
-        val outputShape = interpreter.getOutputTensor(0).shape() // [1, N]
+        val outputShape = interpreter.getOutputTensor(0).shape() // [batch, N]
         embeddingSize = outputShape[1]
     }
 
     fun embed(faceBitmap: Bitmap): FloatArray {
         val resized = Bitmap.createScaledBitmap(faceBitmap, inputSize, inputSize, true)
         val input = bitmapToByteBuffer(resized)
-        val output = Array(1) { FloatArray(embeddingSize) }
+        val output = Array(batchSize) { FloatArray(embeddingSize) }
         interpreter.run(input, output)
-        return output[0]
+        return l2Normalize(output[0])
+    }
+
+    /**
+     * PATIKRINTA 2026-09-02: originalus mobilefacenet.tflite (MCarlomagno)
+     * jau grazina L2=1.0 normalizuota vektoriu (patikrinta tiesiogiai per adb).
+     * BET syaringan357 InsightFace-loss variantas — NE (rasti atstumai 29-54,
+     * vietoj tiketo 0-2 diapazono unit vektoriams). Reference arcface python
+     * paketas (ArcFace.py) TIES sitas daro l2_norm() PO inferencijos rankiniu
+     * budu — kartojame ta pati zingsni cia UNIVERSALIAI (nekenkia jau
+     * normalizuotam modeliui, butina nenormalizuotam).
+     */
+    private fun l2Normalize(vector: FloatArray): FloatArray {
+        var sumSq = 0f
+        for (v in vector) sumSq += v * v
+        val norm = kotlin.math.sqrt(sumSq)
+        if (norm == 0f) return vector
+        return FloatArray(vector.size) { i -> vector[i] / norm }
     }
 
     private fun bitmapToByteBuffer(bitmap: Bitmap): ByteBuffer {
-        val buffer = ByteBuffer.allocateDirect(4 * inputSize * inputSize * 3)
+        val buffer = ByteBuffer.allocateDirect(4 * batchSize * inputSize * inputSize * 3)
         buffer.order(ByteOrder.nativeOrder())
         val pixels = IntArray(inputSize * inputSize)
         bitmap.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
-        for (pixel in pixels) {
-            // Normalizuota [-1, 1], standartinis MobileFaceNet preprocessing.
-            buffer.putFloat((((pixel shr 16) and 0xFF) - 127.5f) / 128f)
-            buffer.putFloat((((pixel shr 8) and 0xFF) - 127.5f) / 128f)
-            buffer.putFloat(((pixel and 0xFF) - 127.5f) / 128f)
+        repeat(batchSize) {
+            for (pixel in pixels) {
+                // Normalizuota [-1, 1], standartinis MobileFaceNet preprocessing.
+                buffer.putFloat((((pixel shr 16) and 0xFF) - 127.5f) / 128f)
+                buffer.putFloat((((pixel shr 8) and 0xFF) - 127.5f) / 128f)
+                buffer.putFloat(((pixel and 0xFF) - 127.5f) / 128f)
+            }
         }
         buffer.rewind()
         return buffer
