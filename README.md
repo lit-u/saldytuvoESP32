@@ -226,10 +226,29 @@ Ta pati API forma kaip laptopo Flask serveryje (`/recognize`, POST raw JPEG) —
 5. **Po pataisymo: sėkmingas atpažinimas su NAUJA, mažiau šviesia nuotrauka** (vartotojo pastaba apie tamsą pasitvirtino kaip reali problema ankstesniuose testuose): `{"name":"Seimininkas","distance":1.1161173582077026}`, ~9.5s.
 6. **PILNAS end-to-end testas su TIKRU ESP32 hardware:** `secrets.h` `SECRET_SERVER_URL` atnaujintas į telefono IP, ESP32 reflash'intas, Serial log parodė: `[FaceRecognition] Serveris: name="Seimininkas" -> Seimininkas` — ESP32 → WiFi → telefonas → ML Kit+TFLite → teisingas atsakymas → teisingai susietas su `RecognizedPerson` enum. **VISA GRANDINĖ VEIKIA.**
 
+### Statistinis tikslumo testas (2026-09-02) — RASTAS REALUS RIBOTUMAS
+
+Po ~14 vartotojo nuotraukų (įvairus apšvietimas/kampas/amžius/išraiška, žr. testavimo istoriją commit'uose) ir palyginimo su GIMINAIČIU (sūnumi) bei NEGIMININGAIS vyrais per `/test` puslapį (naujas debug endpoint'as, žr. žemiau):
+
+**Savo nuotraukos (teisingas atpažinimas):** ~18/22 (≈82%) su originaliu apkirpimu — nepavykusios visos ties riba (1.316–1.335, tik ~0.02–0.035 virš 1.3 slenksčio).
+
+**KRITINIS RADINYS — giminaičio klaidingas priėmimas:** sūnaus nuotraukos **4/7 (57%) klaidingai atpažintos kaip "Seimininkas"**, su atstumais (1.195–1.299), kurie TIESIOGIAI PERSIDENGIA su vartotojo paties tikrais atstumais. **Negiminingi vyrai:** 2/4 (50%) irgi klaidingai priimti — problema NE vien giminystė.
+
+**Bandytas pataisymas (FaceCropper.kt):** originalus `mobilefacenet.tflite` šaltinis (`MCarlomagno/FaceRecognitionAuth`) naudoja (a) 10px paraštę aplink ML Kit stačiakampį (mūsų nebuvo), (b) `copyResizeCropSquare` (kerpa iki kvadrato be iškraipymo, mūsų kodas tiesiog "ištempdavo" iki 112×112) ir (c) slenkstį `0.5`, ne 1.3! Pridėjome proporcingą 15% paraštę + kvadratinį apkirpimą prieš resize.
+
+**Rezultatas po pataisymo — MIŠRUS, NE aiškus laimėjimas:** pakartotinai testuojant TAS PAČIAS sūnaus nuotraukas: 1 atvejis pasitaisė (1.2847→1.3218, tapo teisingas), 1 pablogėjo (1.2533→1.2004, giliau į klaidą), kiti be reikšmingo pokyčio. **Sūnaus klaidingo priėmimo problema IŠLIEKA** po pataisymo.
+
+**Išvada:** tai NE apkirpimo/slenksčio derinimo problema, o greičiausiai **fundamentalus MobileFaceNet (lengvo, mobiliam optimizuoto modelio) skiriamosios gebos ribotumas** giminaičiams/panašiems veidams atskirti — atitinka ANKSTESNĮ šio projekto tyrimą (VGG-Face 0.90 vs Dlib 0.57 tiesioginiame palyginime, VGG-Face >95% specifiškai broliams/seserims). **Vartotojas linksta grįžti prie VGG-Face** (laptopo `server/` kelias jau veikė gerai su 1280px nuotraukomis vakar) — klausimas, ant kokio NUOLAT ĮJUNGTO įrenginio (ne laptopo, kurio atsisakyta dėl patikimumo, galbūt Raspberry Pi) tai paleisti. **Šis tyrimas bus atskiroje šakoje** (pvz. `vgg-face-alternative-server`), kad dabartinis (netobulas, bet veikiantis, žinomas) telefono/MobileFaceNet sprendimas liktų saugus atsarginis variantas šioje šakoje.
+
+### `/test` debug endpoint'as (pridėta 2026-09-02)
+
+`GET /test` — HTML puslapis (embeduotas tiesiai `RecognitionServer.kt`, tas pats origin kaip API, jokių CORS problemų), leidžiantis rankiniu būdu pasirinkti nuotrauką bet kuriame įrenginyje to paties tinklo naršyklėje ir iškart pamatyti `/recognize` atsakymą + laiką. TIK testuoja, NIEKADA neregistruoja (skiriasi nuo `/enroll`). Naudinga statistikos rinkimui be manualaus `curl`/failų perkėlimo.
+
 ### Kas toliau
 
-- Užregistruoti realius šeimos narius (ne tik "Seimininkas") — per programėlės UI arba `/enroll` endpoint'ą.
-- Patikrinti `DISTANCE_THRESHOLD=1.3f` su SKIRTINGAIS žmonėmis (ar neatpažįsta klaidingai svetimo kaip šeimos nario) — kol kas tik patikrinta, kad TEISINGAS atpažinimas praeina, NE kad neteisingas atmetamas.
+- **Nauja šaka VGG-Face tyrimui** ant nuolat įjungto įrenginio (ne laptopo) — kitas žingsnis.
+- Užregistruoti realius šeimos narius (ne tik "Seimininkas") — per programėlės UI arba `/enroll` endpoint'ą — ATIDĖTA, kol neišspręstas modelio tikslumo klausimas.
+- `DISTANCE_THRESHOLD=1.3f` patvirtinta NEPAKANKAMAI saugus giminaičiams/panašiems veidams atskirti su MobileFaceNet.
 - `FACE_SCAN_TIMEOUT_MS=2500ms` per trumpas realiam HTTP round-trip laikui (5-10s telefono atveju) — realiai per SCANNING langą įvyksta tik VIENAS bandymas, ne keli kaip on-device architektūroje. Apsvarstyti, ar timeout konstanta vis dar prasminga, ar tiesiog leisti vienam blokuojančiam kvietimui nuspręsti.
 - Telefono baterijos/šilumos elgesys nuolat veikiant kaip serveriui, prijungtam prie kroviklio, dar nepatikrintas ilgu laikotarpiu.
 - `RecognitionForegroundService` START_STICKY — patikrinti, ar realiai išgyvena ilgesnį laiką ekranui išjungus (Android battery optimization gali vis tiek užmušti procesą priklausomai nuo Huawei EMUI agresyvaus energijos valdymo — žinoma EMUI problema kitiems background app'ams, nepatikrinta šiam konkrečiam atvejui).

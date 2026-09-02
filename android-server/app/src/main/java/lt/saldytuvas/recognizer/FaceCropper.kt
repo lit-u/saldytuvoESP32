@@ -29,10 +29,39 @@ class FaceCropper {
         val largest = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
             ?: return null
 
-        val box = clampToBitmap(largest.boundingBox, bitmap.width, bitmap.height)
+        // PATIKRINTA 2026-09-02: originalus mobilefacenet.tflite saltinis
+        // (MCarlomagno/FaceRecognitionAuth) prie ML Kit stacikampio prideda
+        // paraste (jie: fiksuoti 10px, tinka ju maziems kameros kadrams;
+        // cia proporcinga % dydzio, nes musu nuotraukos ivairaus dydzio) —
+        // be sitos parastes musu atstumai buvo sistemingai per dideli
+        // (0.97-1.4 vietoj tiketo ~0.5 slenkscio diapazono).
+        val marginX = (largest.boundingBox.width() * 0.15f).toInt()
+        val marginY = (largest.boundingBox.height() * 0.15f).toInt()
+        val expanded = Rect(
+            largest.boundingBox.left - marginX,
+            largest.boundingBox.top - marginY,
+            largest.boundingBox.right + marginX,
+            largest.boundingBox.bottom + marginY
+        )
+
+        val box = clampToBitmap(expanded, bitmap.width, bitmap.height)
         if (box.width() <= 0 || box.height() <= 0) return null
 
-        return Bitmap.createBitmap(bitmap, box.left, box.top, box.width(), box.height())
+        // PATIKRINTA: originalus saltinis naudoja copyResizeCropSquare (kerpa
+        // IKI kvadrato, NEIKRAIPO proporciju), o musu ankstesnis kodas tiesiog
+        // "istempdavo" staciakampi iki 112x112 (FaceEmbedder.embed() resize),
+        // iskraipydamas veido proporcijas. Cia padarome kvadrata PRIES resize.
+        val square = squareCrop(box, bitmap.width, bitmap.height)
+        return Bitmap.createBitmap(bitmap, square.left, square.top, square.width(), square.height())
+    }
+
+    /** Sutraukia staciakampi i kvadrata (imant trumpesne krastine), centruotai. */
+    private fun squareCrop(box: Rect, bitmapWidth: Int, bitmapHeight: Int): Rect {
+        val side = minOf(box.width(), box.height())
+        val cx = box.centerX()
+        val cy = box.centerY()
+        val half = side / 2
+        return clampToBitmap(Rect(cx - half, cy - half, cx + half, cy + half), bitmapWidth, bitmapHeight)
     }
 
     private fun clampToBitmap(box: Rect, width: Int, height: Int): Rect {

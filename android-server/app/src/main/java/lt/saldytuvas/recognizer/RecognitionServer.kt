@@ -30,6 +30,9 @@ class RecognitionServer(
                 session.method == Method.GET && session.uri == "/health" ->
                     jsonResponse(JSONObject().put("status", "ok"))
 
+                session.method == Method.GET && session.uri == "/test" ->
+                    newFixedLengthResponse(Response.Status.OK, "text/html", TEST_PAGE_HTML)
+
                 session.method == Method.POST && session.uri == "/recognize" ->
                     handleRecognize(session)
 
@@ -52,7 +55,9 @@ class RecognitionServer(
         val face = faceCropper.cropLargestFace(bitmap)
         if (face == null) {
             onLog("Veidas nerastas kadre.")
-            return jsonResponse(JSONObject().put("name", "unknown"))
+            return jsonResponse(
+                JSONObject().put("name", "unknown").put("reason", "no_face_detected")
+            )
         }
 
         val embedding = faceEmbedder.embed(face)
@@ -60,7 +65,11 @@ class RecognitionServer(
 
         if (match == null || match.second > distanceThreshold) {
             onLog("Veidas rastas, bet neatpazintas (atstumas=${match?.second}).")
-            return jsonResponse(JSONObject().put("name", "unknown"))
+            val resp = JSONObject().put("name", "unknown").put("reason", "too_different")
+            if (match != null) {
+                resp.put("closest_name", match.first).put("closest_distance", match.second.toDouble())
+            }
+            return jsonResponse(resp)
         }
 
         onLog("Atpazinta: ${match.first} (atstumas=${match.second})")
@@ -109,5 +118,54 @@ class RecognitionServer(
 
     private fun jsonResponse(json: JSONObject): Response {
         return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
+    }
+
+    companion object {
+        // /test — paprastas rankinis testavimo puslapis (nuotraukos pasirinkimas
+        // -> POST /recognize -> JSON atsakymas). Tas pats "origin" kaip serveris,
+        // tad nera CORS problemu. Atidaryti bet kuriame irenginyje to paties
+        // tinklo narsykleje: http://<telefono-ip>:5000/test
+        private const val TEST_PAGE_HTML = """<!DOCTYPE html>
+<html lang="lt"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atpazinimo testas</title>
+<style>
+  body { font-family: sans-serif; max-width: 500px; margin: 12px auto; padding: 0 12px; }
+  #result { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 18px; white-space: pre-wrap; }
+  .ok { background: #d4f7d4; } .no { background: #f7d4d4; }
+  img { max-width: 100%; margin-top: 12px; border-radius: 8px; }
+  input, button { font-size: 16px; padding: 8px; }
+  #history { margin-top: 20px; font-size: 13px; }
+  #history div { padding: 4px 0; border-bottom: 1px solid #eee; }
+</style></head><body>
+<h2>Veido atpazinimo testas</h2>
+<input type="file" id="fileInput" accept="image/*">
+<div id="result"></div>
+<img id="preview">
+<h3>Istorija</h3>
+<div id="history"></div>
+<script>
+document.getElementById("fileInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById("preview").src = URL.createObjectURL(file);
+  const resultDiv = document.getElementById("result");
+  resultDiv.textContent = "Testuojama..."; resultDiv.className = "";
+  const start = performance.now();
+  try {
+    const resp = await fetch("/recognize", { method: "POST", headers: {"Content-Type": "image/jpeg"}, body: file });
+    const elapsed = ((performance.now() - start) / 1000).toFixed(1);
+    const json = await resp.json();
+    const ok = json.name && json.name !== "unknown";
+    resultDiv.textContent = JSON.stringify(json, null, 2) + "\n\n(" + elapsed + "s)";
+    resultDiv.className = ok ? "ok" : "no";
+    const entry = document.createElement("div");
+    entry.textContent = file.name + ": " + JSON.stringify(json) + " (" + elapsed + "s)";
+    document.getElementById("history").prepend(entry);
+  } catch (err) {
+    resultDiv.textContent = "KLAIDA: " + err; resultDiv.className = "no";
+  }
+});
+</script></body></html>"""
     }
 }
