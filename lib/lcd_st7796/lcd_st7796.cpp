@@ -50,6 +50,45 @@ static void lcd_send_color(lv_display_t *disp, const uint8_t *cmd, size_t cmd_si
     lv_display_flush_ready(disp);
 }
 
+static void raw_cmd(uint8_t cmd, const uint8_t *data, size_t len) {
+    s_spi.beginTransaction(SPISettings(LCD_SPI_HZ, MSBFIRST, SPI_MODE0));
+    digitalWrite(LCD_PIN_CS, LOW);
+    digitalWrite(LCD_PIN_DC, LOW);
+    s_spi.transfer(cmd);
+    if (len) {
+        digitalWrite(LCD_PIN_DC, HIGH);
+        s_spi.writeBytes(data, len);
+    }
+    digitalWrite(LCD_PIN_CS, HIGH);
+    s_spi.endTransaction();
+}
+
+// Waveshare oficialaus ESP-IDF pavyzdzio (esp_lcd_st7796.c, produktas
+// "ESP32-S3-Touch-LCD-3.5" — tiksliai musu plokstes ekranas) galios/gama
+// derinimo reiksmes — PATIKRINTA 2026-09-03, siunciamos PO LVGL init, kad
+// perrasytu tuos pacius registrus tiksliomis Waveshare reiksmemis (kontrasto/
+// spalvu kokybes pagerinimui). PASTABA: sios reiksmes NEVALDO R/G/B kanalu
+// tvarkos (tai MADCTL/BGR flag'o darbas, jau teisingas) — nesitiketi, kad tai
+// pataisys ziname zalios/melynos sukeitima (tas yra LVGL piesimo pipeline'e).
+static void apply_waveshare_gamma_power_tuning() {
+    raw_cmd(0xF0, (const uint8_t[]){0xC3}, 1);
+    raw_cmd(0xF0, (const uint8_t[]){0x96}, 1);
+    raw_cmd(0xB4, (const uint8_t[]){0x01}, 1);
+    raw_cmd(0xB7, (const uint8_t[]){0xC6}, 1);
+    raw_cmd(0xC0, (const uint8_t[]){0x80, 0x45}, 2);
+    raw_cmd(0xC1, (const uint8_t[]){0x13}, 1);
+    raw_cmd(0xC2, (const uint8_t[]){0xA7}, 1);
+    raw_cmd(0xC5, (const uint8_t[]){0x0A}, 1);
+    raw_cmd(0xE8, (const uint8_t[]){0x40, 0x8A, 0x00, 0x00, 0x29, 0x19, 0xA5, 0x33}, 8);
+    raw_cmd(0xE0, (const uint8_t[]){0xD0, 0x08, 0x0F, 0x06, 0x06, 0x33, 0x30, 0x33,
+                                     0x47, 0x17, 0x13, 0x13, 0x2B, 0x31}, 14);
+    raw_cmd(0xE1, (const uint8_t[]){0xD0, 0x0A, 0x11, 0x0B, 0x09, 0x07, 0x2F, 0x33,
+                                     0x47, 0x38, 0x15, 0x16, 0x2C, 0x32}, 14);
+    raw_cmd(0xF0, (const uint8_t[]){0x3C}, 1);
+    raw_cmd(0xF0, (const uint8_t[]){0x69}, 1);
+    delay(120);
+}
+
 static void lcd_reset() {
     // Patikrinta seka (lcd_driver.cpp -> lcd_reset()): P1=0 10ms, P1=1 50ms.
     IO_EXTENSION_Output(IO_EXTENSION_LCD_RST_PIN, 0);
@@ -76,6 +115,7 @@ lv_display_t *LCD_ST7796_Init() {
     // Diagnostika 2026-09-03: BALTA<->JUODA tiksliai apsikeite realiu testu
     // (zr. main.cpp LCD spalvu testas) — bandome LVGL inversijos perjungima.
     lv_st7796_set_invert(disp, true);
+    apply_waveshare_gamma_power_tuning();
 
     // lv_st7796_create() nepriskiria pieszimo buferio — tai turime padaryti
     // patys (kaip ir patikrintame Waveshare pavyzdyje, lvgl_driver.cpp).
