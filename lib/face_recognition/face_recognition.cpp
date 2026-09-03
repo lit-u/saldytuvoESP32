@@ -39,14 +39,20 @@ RecognizedPerson FaceRecognition_Identify() {
     if (fb == nullptr) return PERSON_UNKNOWN;
 
     HTTPClient http;
-    // 15s — FRAMESIZE_SXGA JPEG upload per WiFi + serverio MTCNN/VGG-Face
-    // apdorojimas (patikrinta ~3s serverio puseje su panasaus dydzio vaizdu,
-    // + upload laikas) — jei serveris neatsako, nepakibti.
-    http.setTimeout(15000);
+    // Diagnostika 2026-09-03: A/B testas parode, kad telefono ATPAZINIMAS
+    // pats greitas (~2s per localhost), bet failo PERDAVIMAS i telefona per
+    // apkrauta WiFi hotspot (telefonas VIENU METU AP + atpazinimo serveris)
+    // gali uztrukti 30+ s. 40s (buvo 15s) — saugumo atsarga, kol matuojame
+    // SVGA (buvo SXGA) itaka realiam laikui.
+    http.setTimeout(40000);
     http.begin(SECRET_SERVER_URL);
     http.addHeader("Content-Type", "image/jpeg");
 
+    uint32_t requestStartMs = millis();
     int httpCode = http.POST(fb->buf, fb->len);
+    uint32_t elapsedMs = millis() - requestStartMs;
+    Serial.printf("[FaceRecognition] Uzklausa uztruko %.1fs (kadras %u baitu)\n",
+                  elapsedMs / 1000.0f, fb->len);
     esp_camera_fb_return(fb);
 
     RecognizedPerson result = PERSON_UNKNOWN;

@@ -9,13 +9,12 @@
  *   MOSI=IO1, SCLK=IO5, DC=IO3, CS=IO6, MISO nenaudojamas (rasyk-only SPI),
  *   80MHz pclk. RESET -> CH32V003 EXIO P1, BACKLIGHT -> EXIO PWM registras.
  *
- * NEPATVIRTINTA (Waveshare dar nera paskelbe atskiro 3.5" pavyzdzio su
- * ST7796 sioje plokstes seimoje — sitos reiksmes paimtos is ju ESP-IDF
- * Brookesia demo naudojamo stiliaus pavadinimo "320x480" bei is bendros
- * ST7796 3.5" moduliu praktikos): skiriamoji geba 320x480 (portretas),
- * RGB/BGR eiliskumas ir MADCTL mirror bitai. Jei pirmo paleidimo metu
- * spalvos apverstos (raudona/melyna sukeista) arba vaizdas veidrodinis —
- * keisk LCD_FLAGS zemiau (pridek LV_LCD_FLAG_BGR / _MIRROR_X / _MIRROR_Y).
+ * PATIKRINTA REALIU HARDWARE 2026-09-03 (nufilmuotas 5-spalvu testas su
+ * tiksliais laiko zymekliais): MADCTL BGR + invert=true (zr. .cpp) parodo
+ * RAUDONA/BALTA/JUODA teisingai. Likusi ZALIA/MELYNA (ciklinė R/G/B kanalu
+ * rotacija LVGL piesimo kelyje, tiksli vieta LVGL viduje nerasta) pataisyta
+ * lcd_send_color() funkcijoje, TIESIOGIAI pries SPI siuntima (zr. .cpp
+ * komentara) — patvirtinta, kad visos 5 spalvos dabar rodomos teisingai.
  */
 #pragma once
 #include <Arduino.h>

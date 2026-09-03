@@ -175,10 +175,19 @@ bool initCamera() {
     config.pin_href = CAM_HREF_PIN;
     config.pin_pclk = CAM_PCLK_PIN;
     // server-face-recognition saka: JPEG (serveriui siunciamas tiesiogiai,
-    // nereikia konversijos). FRAMESIZE_SXGA (1280x1024) — PATIKRINTA 2026-08-31
-    // realiu testu: 640x480 (VGA) MTCNN VISAI NERADO veido serverio puseje
-    // (per mazai detaliu), o 1280 plocio nuotrauka atpazino teisingai per
-    // ~3s. Zemesne uz SXGA nerizikuoti be pakartotinio testo.
+    // nereikia konversijos). BUVO FRAMESIZE_SXGA (1280x1024) — PATIKRINTA
+    // 2026-08-31: 640x480 (VGA) MTCNN VISAI NERADO veido (per mazai detaliu).
+    //
+    // DIAGNOSTIKA 2026-09-03: vartotojas patvirtino svariu A/B testu (tas
+    // pats failas kompe->telefonui per WiFi = 31-35s, tas pats failas
+    // TIESIOGIAI telefone/localhost = 2s), kad letumo priezastis NE telefono
+    // apdorojimas (greitas!), o DUOMENU PERDAVIMAS i telefona per WiFi —
+    // telefonas VIENU METU yra ir hotspot'as (routina ESP32+kompo srauta),
+    // IR vykdo atpazinima, tad realus pralaidumas i ji ribotas net su geru
+    // signalu (88%, 144Mbps). ESP32 SIUNCIA TA PATI kelia telefonui, tad
+    // mazesnis kadras = maziau duomenu per apkrauta hotspot'a = greiciau.
+    // SVGA (800x600) — tarpinis pasirinkimas tarp SXGA (per daug duomenu)
+    // ir VGA (jau zinoma nepakankama detale MTCNN veido aptikimui).
     // xclk_freq_hz=10MHz + fb_count=1 PALIKTA is ankstesnio (eloquent-facelib-
     // experiment sakos) rasto DMA/cam_task crash fix'o (RGB565+20MHz+fb_count=2
     // sukeldavo "EV-EOF-OVF" -> Guru Meditation kas boot'a) — sios nuostatos
@@ -187,7 +196,7 @@ bool initCamera() {
     config.ledc_timer = LEDC_TIMER_0;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size = FRAMESIZE_SXGA;      // 1280x1024
+    config.frame_size = FRAMESIZE_SVGA;      // 800x600 (buvo SXGA 1280x1024)
     config.jpeg_quality = 12;
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_PSRAM;
