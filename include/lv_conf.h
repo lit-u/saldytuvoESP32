@@ -629,7 +629,9 @@
 #define LV_FONT_CUSTOM_DECLARE
 
 /** Always set a default font */
-#define LV_FONT_DEFAULT &lv_font_montserrat_14
+// 3.5" ekranas (320x480) ziurimas is atstumo (saldytuvo terminalas) —
+// numatytasis 14 per mazas, pakelta iki 20 (vartotojo pastaba 2026-09-03).
+#define LV_FONT_DEFAULT &lv_font_montserrat_20
 
 /** Enable handling large font and/or fonts with a lot of characters.
  *  The limit depends on the font size, font face and bpp.

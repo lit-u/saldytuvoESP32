@@ -63,6 +63,18 @@ RecognizedPerson FaceRecognition_Identify() {
                           result == PERSON_UNKNOWN
                               ? "PERSON_UNKNOWN"
                               : FamilyProfiles_Get(result).displayName);
+            // Diagnostika: kai "unknown", telefono serveris grazina PRIEZASTI
+            // (no_face_detected/too_different) + artimiausia atstuma — svarbu
+            // atskirti "kamera nerado veido" nuo "rado, bet per skirtingas".
+            if (result == PERSON_UNKNOWN && doc["reason"].is<const char *>()) {
+                Serial.printf("[FaceRecognition] Priezastis: %s", doc["reason"].as<const char *>());
+                if (doc["closest_distance"].is<float>()) {
+                    Serial.printf(" (artimiausias: %s, atstumas=%.4f)",
+                                  doc["closest_name"] | "?",
+                                  doc["closest_distance"].as<float>());
+                }
+                Serial.println();
+            }
         }
     } else {
         Serial.printf("[FaceRecognition] HTTP klaida: %d (%s)\n", httpCode,

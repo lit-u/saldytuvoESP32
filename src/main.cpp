@@ -21,6 +21,7 @@
 #include <Wire.h>
 #include <SD_MMC.h>
 #include <esp_camera.h>
+#include <ESPAsyncWebServer.h>
 #include <lvgl.h>
 
 #include "io_extension.h"
@@ -127,7 +128,11 @@ void syncTime() {
 bool initSDCard() {
     Serial.println("[SD] Inicijuojama SD kortele (native SDMMC 1-bit)...");
     SD_MMC.setPins(SD_CLK_PIN, SD_CMD_PIN, SD_D0_PIN);
-    if (!SD_MMC.begin("/sdcard", true /* 1-bit rezimas */)) {
+    // Diagnostika 2026-09-03: 0x107 (ESP_ERR_TIMEOUT) send_op_cond zingsnyje
+    // net su TIKRAI veikiancia (kitame kompiuteryje ka tik performatuota)
+    // kortele — bandome zemesni SDMMC_FREQ_DEFAULT (20MHz) vietoj numatytojo
+    // SDMMC_FREQ_HIGHSPEED (40MHz), jei tai laikinimo/signalo kokybes klausimas.
+    if (!SD_MMC.begin("/sdcard", true /* 1-bit rezimas */, false, SDMMC_FREQ_DEFAULT)) {
         Serial.println("[SD] Klaida: SD kortele nerasta arba nepavyko inicijuoti.");
         return false;
     }
@@ -265,6 +270,47 @@ void initDisplay() {
     LCD_Backlight_Set(0);
 }
 
+// --- DEVELOPMENT_MODE: HTTP kameros peržiūra --------------------------------
+// GET /snapshot grazina TIKRA JPEG kadra — atidaryk naršykleje
+// (http://<esp32-ip>/snapshot) tame pačiame WiFi, kad matytum, ka kamera
+// realiai fiksuoja (kadravimo/atstumo kalibravimui). Naudinga TIK dev metu —
+// PASALINTI kartu su DEVELOPMENT_MODE flag'u pries gamybini flash'inima.
+//
+// PASTABA 2026-09-03: bandytas platesnis "/calibrate" (fotografuoti + is
+// karto atpazinti + rodyti viename puslapyje) — PASALINTA. Blokuojantis
+// HTTPClient.POST() AsyncWebServer callback'e sukele "task_wdt" reset'a;
+// perkelus i loop() (atidetas atsakymas) — nauja klaida, "Guru Meditation
+// Error: Core 1 panic'ed (StoreProhibited)" (AsyncWebServerRequest rodykle
+// tampa negaliojanti, kol laukia loop() eiles). Per rizikinga pagalbiniam
+// kalibravimo irankiui — liko tik paprastas, PATIKIMAI veikiantis /snapshot.
+static AsyncWebServer s_webServer(80);
+
+void initWebServer() {
+    s_webServer.on("/snapshot", HTTP_GET, [](AsyncWebServerRequest *request) {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            request->send(503, "text/plain", "Kameros kadras nepavyko");
+            return;
+        }
+        AsyncWebServerResponse *response = request->beginResponse(
+            "image/jpeg", fb->len,
+            [fb](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+                size_t remain = fb->len - index;
+                size_t toCopy = remain < maxLen ? remain : maxLen;
+                memcpy(buffer, fb->buf + index, toCopy);
+                if (index + toCopy >= fb->len) {
+                    esp_camera_fb_return(fb);
+                }
+                return toCopy;
+            });
+        request->send(response);
+    });
+
+    s_webServer.begin();
+    Serial.printf("[WebServer] /snapshot pasiekiamas: http://%s/snapshot\n",
+                  WiFi.localIP().toString().c_str());
+}
+
 // ---------------------------------------------------------------------------
 // SETUP / LOOP
 // ---------------------------------------------------------------------------
@@ -310,6 +356,16 @@ void setup() {
     initDisplay();
     Touch_FT6336_Init(Wire);
 
+#ifdef DEVELOPMENT_MODE
+    // Kadravimo/atstumo kalibravimo pagalba: HTTP /snapshot (zr. initWebServer())
+    // vietoj tiesioginio vaizdo pacaime LCD — bandyta LVGL canvas + jpg2rgb565,
+    // bet gauta rimta duomenu "plesymo" (tearing) klaida (SPI flush lenktyniauja
+    // su buferio perrasymu), be to net teisingai suderintos spalvos butu tik
+    // kosmetinis patobulinimas siam pagalbiniam irankiui — PASALINTA, zr. git
+    // istorija jei reikes grizti. Naršyklė dekoduoja tikra JPEG teisingai visada.
+    initWebServer();
+#endif
+
     FamilyMessages_Init();
     AppStateMachine_Init();
 
@@ -338,9 +394,17 @@ void loop() {
     // v1: kai state machine pati nusprendzia grizti i STANDBY (15s be
     // aktyvumo — zr. app_state_machine.cpp), is karto uzmiegame. PWR
     // mygtukas (IO15/ext0) yra vienintelis pazadinimo saltinis.
+    //
+    // DEVELOPMENT_MODE (platformio.ini build_flags): deep sleep isjungtas,
+    // nes giliame miege native USB CDC dingsta, o COM prievadas issijungia
+    // TIKSLIAI tada, kai pio upload bando prisijungti (build+pasiruosimas
+    // uztrunka ilgiau nei SCREEN_AWAKE_TIMEOUT_MS). Pasalinti sia vėliavėlę
+    // pries gamybini (ne dev) flash'inima.
+#ifndef DEVELOPMENT_MODE
     if (AppStateMachine_GetState() == APP_STATE_STANDBY) {
         DeepSleep_EnterSleep();
     }
+#endif
 
     // TODO: cia vėliau bus web serverio handleClient() (jei ne async),
     // garso buferio apdorojimas ir t.t.

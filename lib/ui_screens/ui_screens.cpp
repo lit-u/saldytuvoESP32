@@ -26,6 +26,7 @@ void UI_Screens_Init() {
     lv_obj_center(spinner);
     lv_obj_t *label = lv_label_create(s_scrScanning);
     lv_label_set_text(label, "Sveiki! Atpazistama...");
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
     lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -30);
 
@@ -53,7 +54,7 @@ void UI_ShowChildGreeting(const PersonProfile &p) {
     // "Animuotas elementas" — paprastas fade+zoom pasisveikinimo uzrasas.
     lv_obj_t *greeting = lv_label_create(s_scrChild);
     lv_label_set_text_fmt(greeting, "Labas, %s! :)", p.displayName);
-    lv_obj_set_style_text_font(greeting, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(greeting, &lv_font_montserrat_32, 0);
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
     lv_obj_center(greeting);
     lv_obj_set_style_opa(greeting, LV_OPA_TRANSP, 0);
@@ -74,13 +75,14 @@ void UI_ShowAdultGreeting(const PersonProfile &p) {
 
     lv_obj_t *greeting = lv_label_create(s_scrAdult);
     lv_label_set_text_fmt(greeting, "Sveikas, %s", p.displayName);
-    lv_obj_set_style_text_font(greeting, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(greeting, &lv_font_montserrat_32, 0);
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
     lv_obj_align(greeting, LV_ALIGN_TOP_MID, 0, 20);
 
     // Dienos komplimentas.
     lv_obj_t *compliment = lv_label_create(s_scrAdult);
     lv_label_set_text(compliment, ADULT_COMPLIMENTS[millis() % ADULT_COMPLIMENTS_COUNT]);
+    lv_obj_set_style_text_font(compliment, &lv_font_montserrat_22, 0);
     lv_obj_set_style_text_color(compliment, lv_color_white(), 0);
     lv_obj_align(compliment, LV_ALIGN_CENTER, 0, 0);
 
@@ -91,6 +93,7 @@ void UI_ShowAdultGreeting(const PersonProfile &p) {
         lv_label_set_long_mode(msgBox, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(msgBox, LV_PCT(85));
         lv_label_set_text_fmt(msgBox, "Zinute: %s", msg.text);
+        lv_obj_set_style_text_font(msgBox, &lv_font_montserrat_20, 0);
         lv_obj_set_style_text_color(msgBox, p.themeAccent, 0);
         lv_obj_align(msgBox, LV_ALIGN_BOTTOM_MID, 0, -20);
     }
