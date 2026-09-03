@@ -272,22 +272,35 @@ Palyginus TAS PAČIAS nuotraukas su seno ir naujo modelio:
 
 **Bendra išvada:** realus, patvirtintas pagerėjimas, bet NE pilnas sprendimas. `DISTANCE_THRESHOLD=1.3f` liko nepakeistas šią sesiją — kito karto darbas: perskaičiuoti tinkamą slenkstį pagal PLATESNĮ, dabar surinktą duomenų kiekį.
 
-### NEIŠBANDYTA šią sesiją (ChatGPT pasiūlyti kandidatai, TIKRINTI KITĄ KARTĄ)
+### Qualcomm AI Hub MobileFaceNet (2026-09-03) — 4-tas modelio variantas, PRIIMTAS kaip galutinis
 
-Vartotojas gavo papildomų pasiūlymų iš ChatGPT — SĄMONINGAI nutraukta šiandien, bet BŪTINA patikrinti kitą sesiją:
-1. **Qualcomm AI Hub MobileFaceNet** (112×112, 128-D embedding, <1mln parametrų, ArcFace loss, deklaruojama 99.48% LFW) — aiškiausiai apibrėžta architektūra iš visų pasiūlytų, BET modelis pateiktas kaip `.pt` (PyTorch), ne paruoštas `.tflite` — reikėtų konvertavimo.
-2. **Seeed Vision Face Embedding projektas** — MobileFaceNet→TFLite, orientuotas į TensorFlow Lite Micro (t.y. GALIMAI tinka tiesiogiai ESP32-S3!). `.tflite` failai NĖRA GitHub'e — reikia generuoti patiems arba rasti release'uose.
-3. **GhostFaceNet** (112×112, 512-D, ArcFace variantas, deklaruojama 99.78% LFW) — turi paruoštus `.tflite` failus (float16/int8), BET naudoja SELECT_TF_OPS/Flex operacijas, kurios GALI NEBŪTI palaikomos paprastame TFLite Micro (ESP32) ar net standartiniame Android TFLite runtime be papildomos konfigūracijos — PATIKRINTI PRIEŠ naudojant.
-4. **Įdomi architektūros idėja iš ChatGPT:** ESP32-S3 (8MB PSRAM) PATS galėtų skaičiuoti embedding'ą per TFLite Micro (ne siųsti visą JPEG telefonui) — telefonas tik saugotų/lygintų embedding'us. Tai KITAS, dar nebandytas kelias nei mūsų ankstesnis on-device bandymas (kuris naudojo EloquentEsp32cam/ESP-DL, NE MobileFaceNet per TFLite Micro tiesiogiai) — verta atskiro tyrimo, ne šios sesijos apimtis.
+Ankstesnės sesijos pastaba, kad Qualcomm modelis "pateiktas kaip `.pt`, ne `.tflite`" **PASIRODĖ NETEISINGA** — tai buvo ChatGPT antrinis teiginys, nepatikrintas prieš patį šaltinį. Tiesiogiai patikrinus `huggingface.co/qualcomm/MobileFaceNet` `release_assets.json`, rastas tiesioginis S3 nuorodos `.tflite` failas (`mobile_facenet-tflite-float.zip`, v0.61.0) — atsisiųstas ir sėkmingai panaudotas be jokio konvertavimo. **Pamoka pakartota dar kartą šiame projekte: visada tikrinti antrinius AI teiginius prieš patį šaltinį, ne priimti kaip faktą.**
 
-**Patikslinta metodika kitai sesijai (ChatGPT patvirtinimas po README perskaitymo, sutinku su požiūriu):** klausimas NEBĖRA "kaip paleisti face recognition" (tai jau veikia) — tai "kaip sumažinti klaidingus sutapimus tarp panašių žmonių". Todėl ieškoti reikia SPECIFIŠKAI **ArcFace-loss treniruotų MobileFaceNet architektūros modelių** (lengvi, mobiliam skirti), NE sunkių ResNet-ArcFace variantų (tas kelias jau išbandytas ir atmestas — `mobilesec` nuoroda mirusi, konvertavimas iš nulio per didelė investicija). Sistemingas planas: surinkti 3-5 konkrečius kandidatus, kiekvienam patikrinti lentelę **modelis → input/output forma → embedding dimensija → TFLite operatoriai (ar tik standartiniai, ar reikia SELECT_TF_OPS/Flex) → failo dydis → suderinamumas → realus atstumas per JAU VEIKIANTĮ `/test` puslapį su TAIS PAČIAIS mūsų nuotraukų duomenimis** — lyginti empiriškai, ne pagal LFW skaičius iš skelbimų.
+**Modelio savybės (128-D, ArcFace loss, MS-Celeb-1M, deklaruojama 99.48% LFW):** iš esmės kitokia TFLite sąsaja nei abu ankstesni MobileFaceNet variantai (MCarlomagno, syaringan357) — pareikalavo pilno `FaceEmbedder.kt` perrašymo:
+- **DU pavadinti įėjimai** (`img1`/`img2`, Siamese poros-palyginimo architektūra), ne vienas — naudojama `runForMultipleInputsOutputs()` su `HashMap<Int,Any>` išvestimi, ne paprastas `run()`. Kadangi mūsų architektūra registruoja/lygina embedding'us atskirai (ne poromis), į abu įėjimus paduodama TA PATI nuotrauka, imama tik pirma išvesties eilutė.
+- **NCHW (kanalai-pirma) `[1,3,112,112]`**, ne NHWC `[1,112,112,3]` kaip abu ankstesni modeliai — pikselių buferis rašomas PLOKŠTUMINIU R/G/B išdėstymu (visos R reikšmės, tada visos G, tada visos B), ne susipynusiu.
+- **`[0,1]` reikšmių diapazonas** (paprastas `/255f`), ne `[-1,1]` (`(pixel-127.5)/128`) kaip ankstesni modeliai.
+- **128-D išvestis** (`[2,128]`), ne 192-D — ir NE savaime normalizuota (kaip syaringan357 modelis), reikalauja `l2Normalize()`.
+
+### KRITINIS RADINYS — MIN vs VIDUTINIS atstumas per kelis registruotus pavyzdžius
+
+Realaus 80+ nuotraukų testo duomenų rinkinys (`zmones/seimininkas` 57, `zmones/sunus` 6, `zmones/kiti` 19 — vartotojo tikros šeimos/pažįstamų nuotraukos, LOKALIAI `saldytuvas/zmones/`, `.gitignore`'inta, NIEKADA necommit'inta) leido pirmą kartą šiame projekte automatizuotai (`server/batch_test.sh`) išmatuoti tikslumą prieš/po pakeitimo, ne pavieniais rankiniais bandymais.
+
+1. **Pradinis testas, 1 registruotas pavyzdys, slenkstis 1.3:** Seimininkas teisingai atpažintas 33/57 (~58%), sunus+kiti teisingai atmesti daugumoje, bet nemažai pralaidžiai ties riba (1.30–1.44).
+2. **Po 9-10 papildomų pavyzdžių registravimo (`enroll_multi.sh`) SU SENA `findClosest()` logika (MINIMALUS atstumas per visus registruotus pavyzdžius):** Seimininkas teisingai atpažintas pakilo iki 49/57 (86%), BET sunus+kiti teisingai atmesti NUKRITO iki 7/25 (28%) — klaidingas priėmimas šoktelėjo nuo ~16% iki **72%**. Vartotojas šitą pastebėjo NEPRIKLAUSOMAI per savo rankinį testavimą ("Nepatinka man, dabar apskritai kaip seimininka rodo labai daug zmoniu") anksčiau nei buvo parodyti skaičiai. **Priežastis:** kuo daugiau registruotų pavyzdžių, tuo daugiau "šansų" bent vienam iš jų atsitiktinai priartėti prie svetimo veido — minimumas per kelis pavyzdžius sistemingai per daug optimistiškas.
+3. **Pataisymas — `EmbeddingStore.findClosest()` pakeista iš MIN į VIDUTINĮ atstumą** per visus to asmens registruotus pavyzdžius (`embeddings.map { distance(...) }.average()`). Rezultatas SU TAIS PAČIAIS 9-10 registruotų pavyzdžių: Seimininkas teisingai atpažintas 32/56 (57%), sunus+kiti teisingai atmesti 20/25 (**80%**), klaidingų priėmimų tik 5 (20%). Žymiai subalansuočiau nei tiek vienas pavyzdys, tiek MIN-per-kelis variantas.
+
+**Galutinis priimtas sprendimas (vartotojo patvirtinimas 2026-09-03: "Pas mane beveik viskas yra super. Imam šitą :)"):** Qualcomm 128-D MobileFaceNet + ~9-10 registruotų pavyzdžių + VIDUTINIS atstumas, `DISTANCE_THRESHOLD=1.3f` (nepakeistas). Tai geriausias iš visų keturių šią ir ankstesnę sesiją bandytų variantų (ESP32-on-device → MCarlomagno → syaringan357/InsightFace → Qualcomm).
+
+**Neišbandyta/atidėta (ChatGPT sąrašo likutis) — sąmoningai NEPAPILDOMA dabar, kol nėra naujo poreikio:**
+- Seeed Vision (TFLite Micro orientuotas) ir GhostFaceNet (SELECT_TF_OPS rizika) kandidatai — Qualcomm modelis buvo bandytas pirmas ir pripažintas pakankamu, likę du netirti.
+- ESP32-S3 pats skaičiuoja embedding'ą per TFLite Micro (be JPEG siuntimo telefonui) — atskira architektūros idėja, netirta.
 
 ### Kas toliau
 
-- **PIRMA:** patikrinti ChatGPT pasiūlytus kandidatus (aukščiau) — ypač Qualcomm 128-D ir Seeed Vision (TFLite Micro orientuotas).
-- Perskaičiuoti `DISTANCE_THRESHOLD` pagal pilną šią sesiją surinktą duomenų kiekį (dešimtys bandymų su nauju modeliu).
-- Užregistruoti realius šeimos narius (ne tik "Seimininkas") — ATIDĖTA, kol modelio klausimas aiškesnis.
-- Apsvarstyti KELIŲ registruotų pavyzdžių įtaką (dabar tik 1 embedding vienam vardui).
+- Recurring sunkus false-positive atvejis (saulės akiniais/plikas vyras, atstumas 1.20) — pridėti į `zmones/kiti/` kaip nuolatinį regresijos testo atvejį.
+- Perskaičiuoti `DISTANCE_THRESHOLD` SPECIFIŠKAI VIDUTINIO atstumo metrikai (dabartiniai 57%/80% skaičiai gauti PRIE 1.3 — kitas slenkstis gali pagerinti balansą, netirta).
+- Užregistruoti realius šeimos narius (ne tik "Seimininkas") — dabar, kai modelio+metrikos klausimas išspręstas, galima tęsti.
 - `FACE_SCAN_TIMEOUT_MS=2500ms` per trumpas realiam HTTP round-trip laikui (5-10s telefono atveju) — realiai per SCANNING langą įvyksta tik VIENAS bandymas, ne keli kaip on-device architektūroje.
 - Telefono baterijos/šilumos elgesys nuolat veikiant kaip serveriui, prijungtam prie kroviklio, dar nepatikrintas ilgu laikotarpiu.
 - `RecognitionForegroundService` START_STICKY — patikrinti, ar realiai išgyvena ilgesnį laiką ekranui išjungus (Android battery optimization gali vis tiek užmušti procesą priklausomai nuo Huawei EMUI agresyvaus energijos valdymo — žinoma EMUI problema kitiems background app'ams, nepatikrinta šiam konkrečiam atvejui).

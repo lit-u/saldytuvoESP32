@@ -26,3 +26,7 @@ server/known_faces/
 server/venv/
 server/__pycache__/
 server/*.pyc
+server/batch_test_results*.txt
+
+# Asmeninės seimos nuotraukos (testavimo duomenys) — NIEKADA necommit'inti
+/zmones/
