@@ -25,16 +25,19 @@ static void lcd_send_cmd(lv_display_t *disp, const uint8_t *cmd, size_t cmd_size
 static void lcd_send_color(lv_display_t *disp, const uint8_t *cmd, size_t cmd_size,
                             uint8_t *param, size_t param_size) {
     (void)cmd_size;
-    // PASTABA 2026-09-03: nufilmuotas 5-spalvu testas parode, kad LVGL
-    // piesimo kelias daro ciklinę R/G/B kanalu rotacija (RAUDONA<->MELYNA<->
-    // ZALIA, balta/juoda nepaveiktos). Bandytas pataisymas CIA (per-pikselio
-    // korekcija pries SPI siuntima) VEIKE statiniams testo ekranams, bet
-    // SUGADINO realu UI su animacijomis (LV_DISPLAY_RENDER_MODE_FULL + spinner
-    // = daug pilno ekrano flush'u, per-pikselio ciklas per lete/nesuderinta) —
-    // realiu testu matytas "sniego" triuksmas ekrane. PASALINTA del rizikos.
-    // Zalia/melyna sukeitimas lieka kaip zinomas kosmetinis trukumas — zr.
-    // git istorija, jei bus noro dar karta bandyti (pvz. lookup lentele vietoj
-    // ciklo, arba rasti tiksli klaidos vieta LVGL viduje).
+    // RASTA TIKSLI PRIEZASTIS 2026-09-03 (ChatGPT pasiulymas palyginti baitus
+    // baitas-baitu su LCD_RawFill): LVGL laiko kiekviena pikseli KAIP NATIVE
+    // (little-endian) uint16_t — RAUDONA (0xF800) buferyje guli kaip baitai
+    // {0x00, 0xF8}, ne {0xF8, 0x00}. ST7796 (kaip ir musu pacios patikrinta
+    // LCD_RawFill) tikisi BIG-ENDIAN (auksta baita pirma) per SPI. Anksciau
+    // bandytas "kanalu rotacijos" pataisymas buvo simptomo, ne priezasties,
+    // korekcija — sitas paprastas baitu apsikeitimas yra TIKRAS sprendimas.
+    size_t pixelCount = param_size / 2;
+    uint16_t *pixels = reinterpret_cast<uint16_t *>(param);
+    for (size_t i = 0; i < pixelCount; i++) {
+        pixels[i] = __builtin_bswap16(pixels[i]);
+    }
+
     s_spi.beginTransaction(SPISettings(LCD_SPI_HZ, MSBFIRST, SPI_MODE0));
     digitalWrite(LCD_PIN_CS, LOW);
 

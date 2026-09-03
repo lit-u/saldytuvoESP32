@@ -400,6 +400,32 @@ void loop() {
     AppStateMachine_Update(false);
     lv_timer_handler();
 
+#ifdef DEVELOPMENT_MODE
+    // Diagnostika 2026-09-03: USB hotplug metu ekranas rodo "sniega" tada
+    // juoda (nesusijes su kodu — patvirtinta ir su sena stabilia versija,
+    // ir su kitu maitinimo saltiniu). VELUOTAS (15s po starto) spalvu testas —
+    // patikrinti, ar SPI/LCD "nusistovi" po pradinio pereinamojo efekto, be
+    // naujo maitinimo ciklo (kuris vėl sukeltu ta pati "sniega").
+    static bool s_delayedColorTestDone = false;
+    static uint32_t s_bootMs = 0;
+    if (s_bootMs == 0) s_bootMs = millis();
+    if (!s_delayedColorTestDone && millis() - s_bootMs > 15000) {
+        s_delayedColorTestDone = true;
+        lv_obj_t *scr = lv_screen_active();
+        struct { const char *name; lv_color_t color; } testColors[] = {
+            {"RAUDONA", lv_color_make(255, 0, 0)},
+            {"ZALIA", lv_color_make(0, 255, 0)},
+            {"MELYNA", lv_color_make(0, 0, 255)},
+        };
+        for (auto &c : testColors) {
+            Serial.printf("[LCD Delayed Test] === %s ===\n", c.name);
+            lv_obj_set_style_bg_color(scr, c.color, 0);
+            lv_timer_handler();
+            delay(4000);
+        }
+    }
+#endif
+
     // v1: kai state machine pati nusprendzia grizti i STANDBY (15s be
     // aktyvumo — zr. app_state_machine.cpp), is karto uzmiegame. PWR
     // mygtukas (IO15/ext0) yra vienintelis pazadinimo saltinis.
