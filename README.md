@@ -350,3 +350,52 @@ python -m platformio run                # kompiliuoti
 python -m platformio run -t upload      # flash'inti (jei nepavyks — laikyk BOOT, spausk RESET, tada upload)
 python -m platformio device monitor     # Serial monitor (115200)
 ```
+
+## Sesija 2026-09-03/04 — LCD spalvos, "EyeRenderer" veidas, asinchroninis atpazinimas
+
+Ilga sesija, daug rastų/pataisytu problemu. Santrauka, kad neprarastume konteksto.
+
+### LCD spalvu klaida — TIKRA priezastis rasta ir pataisyta
+
+`ST7796` (3.5" LCD) rodydavo zalia/melyna sukeista. Diagnostikos eiga:
+1. `LV_LCD_FLAG_BGR` + `lv_st7796_set_invert(disp, true)` — pataise RAUDONA/BALTA/JUODA (patvirtinta oficialiu Waveshare ESP-IDF pavyzdziu, `esp_3inch5_lcd_port.cpp`: identiska konfiguracija).
+2. Liko G/B sukeitimas. Raw SPI testas (be LVGL, tiesiogiai per CASET/RASET/RAMWR) rode TEISINGAI — tai izoliavo klaida i LVGL piesimo pipeline'a, ne i ST7796/SPI/MADCTL.
+3. **Tikra priezastis:** palyginus baitus baitas-baitu (LVGL flush callback vs zinomos raw reiksmes) — LVGL saugo kiekviena pikseli kaip NATIVE (little-endian) `uint16_t` buferyje, o ST7796 tikisi BIG-ENDIAN (auksta baita pirma) per SPI. **Pataisymas:** `lib/lcd_st7796/lcd_st7796.cpp` `lcd_send_color()` dabar daro `__builtin_bswap16()` kiekvienam pikseliui pries SPI siuntima — vienas paprastas baitu apsikeitimas, ne bitu lauku "kanalu rotacijos" korekcija (ta buvo bandyta pirma, veike statiniams testams, bet SUGADINO realu UI su animacijomis — "sniego" triuksmas — todel PASALINTA is `git` istorijos, zr. commit `59fe8f9`→`0fb9785`).
+4. Papildomai pritaikytos oficialios Waveshare gama/galios derinimo reiksmes (kontrastui) — nevalde kanalu tvarkos, bet pagerino vaizdo kokybe.
+
+### "Sniegas" po USB hotplug — PATVIRTINTA kaip isankstine aparaturos ypatybe
+
+Ekranas kartais rodo spalvota triuksma (sniega) kelias sekundes (kartais iki ~1 min) po USB atjungimo/prijungimo, po to nusistovi arba parodo juoda. **Patvirtinta NESUSIJUSIA su kodu** — identiskas elgesys atkurtas su ANKSTESNE, jau stabilia/push'inta versija (prieš visus siandienos pakeitimus) ir su KITU maitinimo saltiniu (ne tik siuo laptopu). Greiciausiai SPI signalo trikdis per USB prijungimo sroves suoli. Realiam naudojimui (nuolatinis maitinimas, ne kartotinis USB replug per vystyma) sis simptomas tikriausiai nepasireikss.
+
+### Windows "Core Isolation" (branduolio izoliacija) — netiketa atpazinimo greicio priezastis
+
+Vartotojas pastebejo, kad atpazinimas per telefona (P10, 192.168.43.51:5000) uztrukdavo 30-45s per SIO KOMPO narsykle/curl, bet TIK 2s tiesiogiai telefone (localhost). Diagnostika (health endpoint be duomenu = 0.8s, greitas; realus /recognize per curl = 10.4s) rode, kad kaltas NE tinklas/telefonas/modelis, o SIO KOMPO busena. **Isjungus Windows Core Isolation / Memory Integrity (VBS) ir perkrovus — atpazinimas per SI KOMPA nukrito iki ~1.2-2s**, sutampa su telefono lokaliu laiku. PASTABA: vartotojas nusprende laikinai isjungti si saugos nustatyma greicio testavimui — suplanuotas priminimas grazinti atgal po savaites (`trig_01S8aJ59y5wHfVFatEGQi6WU`).
+
+### `EyeRenderer` — nauja "veido" komponentas (lib/eye_renderer/)
+
+Produkto krypties pokalbis: dezute turi tureti charakteri (dvi akys), ne buti "ekranas su turiniu/meniu". Monochrominis (balta kontūras ant juodo) SAMONINGAI — nepriklauso nuo RGB tikslumo.
+- 6 busenos: SLEEP/WAKE/IDLE/LOOKING/HAPPY/GOODBYE, aukscio animacija (uzmerkta→atmerkta→prisimerkusi).
+- Akys TUSCIOS VIDURYJE (tik kontūras), APVALIOS kai pilnai atmerktos — vartotojo estetinis pageidavimas.
+- Antakiai (du sukami stacIakampiai virs akiu): LOOKING = V forma (susikaupusi), HAPPY = ^ forma (linksma, pakelti). HAPPY taip pat naudoja PILNAS/apvalias akis (silciau atrodo atpazinus), ne prisimerkusias.
+- VIENA akiu+antakiu pora, PERKELIAMA tarp ekranu (`lv_obj_set_parent`), ne kuriama is naujo — butina "gelbeti" i standby ekrana PRIES bet kokio kito ekrano `lv_obj_clean()`, kitaip ju objektai butu sunaikinti.
+- Integruota i `ui_screens.cpp`: STANDBY=SLEEP, SCANNING=LOOKING, CHILD/ADULT GREETING=HAPPY.
+- PATVIRTINTA REALIU HARDWARE (nuotraukos): LOOKING+antakiai ir HAPPY+GREETING abu veikia teisingai.
+
+### Asinchroninis veido atpazinimas — akys nebeuzsalusios per laukima
+
+Rasta: `enterScanning()` parodydavo SCANNING ekrana, bet `FaceRecognition_Identify()` yra BLOKUOJANTIS HTTP kvietimas (2-45s, priklausomai nuo WiFi hotspot apkrovos) — per ta laika LVGL "uzsaldavo", jokia animacija nejudejo, atrodydavo, kad sistema pakibusi.
+
+**Pataisymas:** `FaceRecognition_IdentifyAsync()` (`face_recognition.cpp`) paleidzia esama `FaceRecognition_Identify()` ATSKIRAME FreeRTOS task'e (core 0, 8KB stack). `IsBusy()`/`GetResult()` leidzia main task'ui (core 1, `loop()`) toliau kviesti `lv_timer_handler()` IR papildomai mirksėti akimis kas 1.8s (`EyeRenderer_Blink()`) VISA laukimo laika — "gyvumo" zenklas. Sena `FACE_SCAN_TIMEOUT_MS` (2.5s, per trumpas realiam atsakymui) pakeista `FACE_SCAN_SAFETY_TIMEOUT_MS` (45s) — TIK apsauga, jei task'as niekada nebaigtu (pats HTTP kvietimas jau turi sava 40s timeout'a viduje).
+
+Papildomai pridetas **SCAN_WARMUP_MS (2.5s) "pasiruosimo" langas** PRIES fotografuojant — vartotojo pastaba: "fotografuoja per greitai, kai as net nespejau nuleisti rankos nuo usb". Realiam fiziniam mygtukui sis langas leis vaikui atsistoti pries kamera pries fotografavima.
+
+### Svarbus radinys: kartotinis neatpazinimas gali buti KADRAVIMO, ne modelio, problema
+
+Patikrinus `/snapshot` endpoint'a (rodo, ka kamera REALIAI fiksuoja) rasta, kad vienu metu kamera fotografavo VARTOTOJO RANKA/DILBI, ne veida — akivaizdu, kodel gaunamas `no_face_detected`. **Rekomendacija ateiciai:** prieš analizuojant atpazinimo tikslumo problemas, PIRMA patikrinti `/snapshot`, ar kadre apskritai yra veidas.
+
+### Neatlikta / sekantis kartas
+
+- Naujo `SCAN_WARMUP_MS` pakeitimo VIZUALUS patvirtinimas realiu hardware (kompiliuota ir flash'inta, bet nespeta patikrinti pries sia santrauka).
+- `EyeRenderer` WAKE/GOODBYE busenu ir periodinio IDLE mirksejimo (STANDBY metu) panaudojimas — deklaruota, bet dar niekur nekvieciama.
+- Windows Core Isolation grazinimas atgal (~2026-09-11, jau suplanuotas priminimas).
+- SD kortele lieka neveikianti (nenaudojama, nesvarbu — zr. anksciau siame README).
