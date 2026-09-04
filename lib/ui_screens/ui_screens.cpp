@@ -1,5 +1,6 @@
 #include "ui_screens.h"
 #include "family_messages.h"
+#include "eye_renderer.h"
 #include <Arduino.h>
 
 static lv_obj_t *s_scrStandby = nullptr;
@@ -20,10 +21,7 @@ void UI_Screens_Init() {
     lv_obj_set_style_bg_color(s_scrStandby, lv_color_black(), 0);
 
     s_scrScanning = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(s_scrScanning, lv_color_hex(0x101010), 0);
-    lv_obj_t *spinner = lv_spinner_create(s_scrScanning);
-    lv_obj_set_size(spinner, 80, 80);
-    lv_obj_center(spinner);
+    lv_obj_set_style_bg_color(s_scrScanning, lv_color_black(), 0);
     lv_obj_t *label = lv_label_create(s_scrScanning);
     lv_label_set_text(label, "Sveiki! Atpazistama...");
     lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
@@ -35,28 +33,45 @@ void UI_Screens_Init() {
     // nuo konkretaus atpazinto asmens — cia tik tuscios "drobes".
     s_scrChild = lv_obj_create(NULL);
     s_scrAdult = lv_obj_create(NULL);
+
+    // "Veidas" (dvi akys) — dezute kaip veikejas, ne "ekranas, kuriame
+    // kazka rodome" (zr. pokalbio istorija 2026-09-04 del produkto krypties).
+    // VIENA akiu pora, perkeliama tarp ekranu (zr. EyeRenderer_MoveToParent).
+    EyeRenderer_Create(s_scrStandby);
+    EyeRenderer_SetState(EYE_STATE_SLEEP);
 }
 
 void UI_ShowStandby() {
+    EyeRenderer_MoveToParent(s_scrStandby);
+    EyeRenderer_SetState(EYE_STATE_SLEEP);
     lv_screen_load(s_scrStandby);
 }
 
 void UI_ShowScanning() {
+    EyeRenderer_MoveToParent(s_scrScanning);
+    EyeRenderer_SetState(EYE_STATE_LOOKING);
     lv_screen_load_anim(s_scrScanning, LV_SCR_LOAD_ANIM_FADE_IN, 200, 0, false);
 }
 
 // v1: RECOGNIZED ekranas vaikams — TIK pasisveikinimas, be jokio touch
 // reikalavimo (checklist pasalintas is v1, zr. README "atviri klausimai #3").
 void UI_ShowChildGreeting(const PersonProfile &p) {
+    // BUTINA "iSgelbeti" akis i standby PRIES clean() — kitaip, jei akys
+    // dabar priklauso s_scrChild is ankstesnio karto, clean() jas sunaikins.
+    EyeRenderer_MoveToParent(s_scrStandby);
     lv_obj_clean(s_scrChild);
     lv_obj_set_style_bg_color(s_scrChild, p.themeBg, 0);
 
+    EyeRenderer_MoveToParent(s_scrChild);
+    EyeRenderer_SetState(EYE_STATE_HAPPY);
+
     // "Animuotas elementas" — paprastas fade+zoom pasisveikinimo uzrasas.
+    // Apacioje (akys uzima virsutine dali, zr. EYE_Y_OFFSET).
     lv_obj_t *greeting = lv_label_create(s_scrChild);
     lv_label_set_text_fmt(greeting, "Labas, %s! :)", p.displayName);
     lv_obj_set_style_text_font(greeting, &lv_font_montserrat_32, 0);
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
-    lv_obj_center(greeting);
+    lv_obj_align(greeting, LV_ALIGN_CENTER, 0, 80);
     lv_obj_set_style_opa(greeting, LV_OPA_TRANSP, 0);
     lv_obj_fade_in(greeting, 400, 0);
 
@@ -70,21 +85,26 @@ void UI_ShowChildGreeting(const PersonProfile &p) {
 // kas pabudima, tad rodomas laikas galetu buti pasenes — zr. README
 // "Maitinimas / deep sleep").
 void UI_ShowAdultGreeting(const PersonProfile &p) {
+    EyeRenderer_MoveToParent(s_scrStandby);  // "gelbejimas" pries clean()
     lv_obj_clean(s_scrAdult);
     lv_obj_set_style_bg_color(s_scrAdult, p.themeBg, 0);
 
+    EyeRenderer_MoveToParent(s_scrAdult);
+    EyeRenderer_SetState(EYE_STATE_HAPPY);
+
+    // Vardas — apacioje, po akimis (akys uzima virsutine dali).
     lv_obj_t *greeting = lv_label_create(s_scrAdult);
     lv_label_set_text_fmt(greeting, "Sveikas, %s", p.displayName);
     lv_obj_set_style_text_font(greeting, &lv_font_montserrat_32, 0);
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
-    lv_obj_align(greeting, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_align(greeting, LV_ALIGN_CENTER, 0, 40);
 
     // Dienos komplimentas.
     lv_obj_t *compliment = lv_label_create(s_scrAdult);
     lv_label_set_text(compliment, ADULT_COMPLIMENTS[millis() % ADULT_COMPLIMENTS_COUNT]);
     lv_obj_set_style_text_font(compliment, &lv_font_montserrat_22, 0);
     lv_obj_set_style_text_color(compliment, lv_color_white(), 0);
-    lv_obj_align(compliment, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(compliment, LV_ALIGN_CENTER, 0, 90);
 
     // Seimos zinute (tekstine, jei yra) — v2: rasoma per admin web panele.
     const FamilyMessage &msg = FamilyMessages_Get(p.id);
