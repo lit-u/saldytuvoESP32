@@ -2,6 +2,7 @@
 #include "face_recognition.h"
 #include "ui_screens.h"
 #include "lcd_st7796.h"
+#include <lvgl.h>
 
 static AppState s_state = APP_STATE_STANDBY;
 static uint32_t s_lastMotionMs = 0;
@@ -26,6 +27,13 @@ static void enterStandby() {
 static void enterScanning() {
     LCD_Backlight_Set(100);
     UI_ShowScanning();
+    // BUTINA: FaceRecognition_Identify() (kviesta netrukus sekancio
+    // AppStateMachine_Update() metu) yra BLOKUOJANTIS HTTP kvietimas
+    // (kelios sekundes) — be sito priverstinio piesimo ciklo SCANNING
+    // ekranas (akys+tekstas) niekada NEPASIRODYTU fiziskai ekrane pries
+    // prasidedant blokavimui (vartotojo pastaba 2026-09-04: "nebuvo
+    // SCANNING akiu, tik pasveikinimas po pauzes").
+    lv_timer_handler();
     s_scanStartMs = millis();
     s_state = APP_STATE_SCANNING;
 }

@@ -47,8 +47,11 @@ static void setBothEyesHeight(int32_t h, uint32_t durMs) {
 static lv_obj_t *createEyeShape(lv_obj_t *parent) {
     lv_obj_t *o = lv_obj_create(parent);
     lv_obj_remove_style_all(o);
-    lv_obj_set_style_bg_color(o, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    // Tuscios viduje (tik kontūras) — vartotojo pastaba 2026-09-04.
+    lv_obj_set_style_bg_opa(o, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(o, lv_color_white(), 0);
+    lv_obj_set_style_border_width(o, 4, 0);
+    lv_obj_set_style_border_opa(o, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
     lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
