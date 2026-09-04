@@ -5,6 +5,8 @@
 #include <HTTPClient.h>
 #include <esp_camera.h>
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "secrets.h"
 
 static bool s_debugActive = false;
@@ -89,6 +91,41 @@ RecognizedPerson FaceRecognition_Identify() {
 
     http.end();
     return result;
+}
+
+// --- Asinchronine versija (2026-09-04) --------------------------------------
+// FaceRecognition_Identify() vykdomas ATSKIRAME FreeRTOS task'e, kad main
+// loop() galetu toliau kviesti lv_timer_handler() (taigi ir animuoti akis)
+// per visa keliu sekundziu HTTP laukima — anksciau visa UI "uzsaldavo".
+static volatile bool s_asyncBusy = false;
+static volatile RecognizedPerson s_asyncResult = PERSON_UNKNOWN;
+static TaskHandle_t s_asyncTaskHandle = nullptr;
+
+static void faceRecognitionTask(void *param) {
+    (void)param;
+    RecognizedPerson result = FaceRecognition_Identify();
+    s_asyncResult = result;
+    s_asyncBusy = false;
+    s_asyncTaskHandle = nullptr;
+    vTaskDelete(nullptr);
+}
+
+void FaceRecognition_IdentifyAsync() {
+    if (s_asyncBusy) return;  // jau vyksta — nepradeti antro lygiagreciai
+    s_asyncBusy = true;
+    s_asyncResult = PERSON_UNKNOWN;
+    // Stack 8KB — HTTPClient+ArduinoJson+TLS stack naudojimui pakankamai;
+    // core 0 (WiFi/protokolu core), kad neblokuotu Arduino loop() core (1).
+    xTaskCreatePinnedToCore(faceRecognitionTask, "faceRecog", 8192, nullptr,
+                             1, &s_asyncTaskHandle, 0);
+}
+
+bool FaceRecognition_IsBusy() {
+    return s_asyncBusy;
+}
+
+RecognizedPerson FaceRecognition_GetResult() {
+    return s_asyncResult;
 }
 
 void FaceRecognition_DebugForce(RecognizedPerson person) {

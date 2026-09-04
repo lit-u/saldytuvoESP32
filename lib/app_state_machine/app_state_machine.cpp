@@ -2,21 +2,28 @@
 #include "face_recognition.h"
 #include "ui_screens.h"
 #include "lcd_st7796.h"
+#include "eye_renderer.h"
 #include <lvgl.h>
 
 static AppState s_state = APP_STATE_STANDBY;
 static uint32_t s_lastMotionMs = 0;
 static uint32_t s_scanStartMs = 0;
+static uint32_t s_lastBlinkMs = 0;
 
 // Kiek laiko be judesio grizti i STANDBY is GREETING (=RECOGNIZED) busenos.
 // TODO: pagal README "atviri klausimai" — sitas skaicius v1 kontekste
 // reiskia "kiek laiko rodyti ekrana po pasisveikinimo pries miegant".
 // Koreguoti kai turesim realu energijos biudzeta is fizinio testo.
 static const uint32_t SCREEN_AWAKE_TIMEOUT_MS = 15000;
-// Kiek ilgiausiai laukti veido atpazinimo SCANNING busenoje. TODO: siuo metu
-// FaceRecognition_Identify() yra stub (grazina akimirksniu) — sis skaicius
-// dar neisbandytas su realiu atpazinimo modeliu.
-static const uint32_t FACE_SCAN_TIMEOUT_MS = 2500;
+// Saugumo riba SCANNING busenai (2026-09-04, po perejimo i asinchronini
+// atpazinima) — TIK apsauga, jei FreeRTOS task'as kazkodel niekada
+// nebaigtu (paciam HTTP kvietimui jau yra savas 40s timeout'as viduje,
+// zr. face_recognition.cpp) — siek tiek didesnis uz ji, kad nenutrauktu
+// per anksti.
+static const uint32_t FACE_SCAN_SAFETY_TIMEOUT_MS = 45000;
+// Kas kiek laiko sumirksi akys SCANNING metu, kol laukiama atsakymo —
+// "gyvumo" zenklas, kad sistema ne uzsalusi (vartotojo pastaba 2026-09-04).
+static const uint32_t SCAN_BLINK_INTERVAL_MS = 1800;
 
 static void enterStandby() {
     LCD_Backlight_Set(0);
@@ -27,14 +34,17 @@ static void enterStandby() {
 static void enterScanning() {
     LCD_Backlight_Set(100);
     UI_ShowScanning();
-    // BUTINA: FaceRecognition_Identify() (kviesta netrukus sekancio
-    // AppStateMachine_Update() metu) yra BLOKUOJANTIS HTTP kvietimas
-    // (kelios sekundes) — be sito priverstinio piesimo ciklo SCANNING
-    // ekranas (akys+tekstas) niekada NEPASIRODYTU fiziskai ekrane pries
-    // prasidedant blokavimui (vartotojo pastaba 2026-09-04: "nebuvo
-    // SCANNING akiu, tik pasveikinimas po pauzes").
+    // BUTINA: priverstinis piesimo ciklas, kad SCANNING ekranas (akys+
+    // tekstas) fiziskai pasirodytu PRIES paleidziant atpazinimo uzklausa
+    // (vartotojo pastaba 2026-09-04: "nebuvo SCANNING akiu, tik
+    // pasveikinimas po pauzes").
     lv_timer_handler();
+    // Asinchroninis atpazinimas (2026-09-04) — HTTP kvietimas vyksta
+    // atskirame FreeRTOS task'e, main loop() toliau animuoja akis per
+    // visa laukima (zr. SCANNING atveji AppStateMachine_Update()).
+    FaceRecognition_IdentifyAsync();
     s_scanStartMs = millis();
+    s_lastBlinkMs = s_scanStartMs;
     s_state = APP_STATE_SCANNING;
 }
 
@@ -82,18 +92,30 @@ void AppStateMachine_Update(bool motionDetected) {
             break;
 
         case APP_STATE_SCANNING: {
-            RecognizedPerson person = FaceRecognition_Identify();
+            if (FaceRecognition_IsBusy()) {
+                // Dar laukiama HTTP atsakymo (task'as fone) — mirksime
+                // akimis periodiskai, kad butu aisku, jog sistema ne
+                // uzsalusi (vartotojo pastaba 2026-09-04).
+                if (millis() - s_lastBlinkMs > SCAN_BLINK_INTERVAL_MS) {
+                    EyeRenderer_Blink();
+                    s_lastBlinkMs = millis();
+                }
+                // Saugumo riba — TIK jei task'as niekada nebaigtu (HTTP
+                // kvietimas turi sava 40s timeout'a, sitas siek tiek didesnis).
+                if (millis() - s_scanStartMs > FACE_SCAN_SAFETY_TIMEOUT_MS) {
+                    enterStandby();
+                }
+                break;
+            }
+
+            RecognizedPerson person = FaceRecognition_GetResult();
             if (person != PERSON_UNKNOWN) {
                 enterGreeting(person);
                 break;
             }
-            // v1 sutarta: neatpazinus per FACE_SCAN_TIMEOUT_MS — JOKIO
-            // "svecio"/UNKNOWN ekrano, tiesiai atgal i STANDBY (maziau
-            // LVGL redraw = maziau sroves piku).
-            bool timedOut = (millis() - s_scanStartMs) > FACE_SCAN_TIMEOUT_MS;
-            if (timedOut) {
-                enterStandby();
-            }
+            // v1 sutarta: neatpazinus — JOKIO "svecio"/UNKNOWN ekrano,
+            // tiesiai atgal i STANDBY (maziau LVGL redraw = maziau sroves piku).
+            enterStandby();
             break;
         }
 
