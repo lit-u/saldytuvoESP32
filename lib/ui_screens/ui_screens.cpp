@@ -2,7 +2,9 @@
 #include "family_messages.h"
 #include "eye_renderer.h"
 #include "lv_fonts_lt.h"
+#include "audio_output.h"
 #include <Arduino.h>
+#include <LittleFS.h>
 
 static lv_obj_t *s_scrStandby = nullptr;
 static lv_obj_t *s_scrScanning = nullptr;
@@ -64,6 +66,36 @@ static void createMenuButton(lv_obj_t *parent) {
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, "M");
     lv_obj_set_style_text_font(lbl, &lv_font_lt_22, 0);
+    lv_obj_center(lbl);
+}
+
+// "Garsas" mygtukas (vartotojo pastaba 2026-09-05: "adminkėje irasymas, o
+// savo profilyje atkurimas per garsiakalbi, kai paspaudi 'Garsas'") — rodomas
+// TIK jei tam zmogui YRA irasyta balso zinute (LittleFS "/audio/<id>.wav",
+// zr. main.cpp /admin/audio). Audio_PlayFile() yra BLOKUOJANTIS (trunka tiek,
+// kiek irasas) — priimtina trumpam (keliu sekundziu) balso pranesimui, ta
+// pati logika kaip CAMERA_FLASH_MS kitur siame projekte.
+static void soundButtonEventCb(lv_event_t *e) {
+    RecognizedPerson person = (RecognizedPerson)(intptr_t)lv_event_get_user_data(e);
+    char path[32];
+    snprintf(path, sizeof(path), "/audio_%d.wav", (int)person);
+    Audio_PlayFile(path);
+}
+
+static void createSoundButtonIfAvailable(lv_obj_t *parent, RecognizedPerson person) {
+    char path[32];
+    snprintf(path, sizeof(path), "/audio_%d.wav", (int)person);
+    if (!LittleFS.exists(path)) return;  // niekas neirase — mygtuko nerodyti
+
+    lv_obj_t *btn = lv_button_create(parent);
+    lv_obj_set_size(btn, 120, 48);
+    lv_obj_set_style_radius(btn, 24, 0);
+    lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_ORANGE), 0);
+    lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_add_event_cb(btn, soundButtonEventCb, LV_EVENT_CLICKED, (void *)(intptr_t)person);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, LV_SYMBOL_AUDIO " Garsas");
+    lv_obj_set_style_text_font(lbl, &lv_font_lt_20, 0);
     lv_obj_center(lbl);
 }
 
@@ -203,9 +235,8 @@ void UI_ShowChildGreeting(const PersonProfile &p) {
     // "Kiek telpa" testas (2026-09-05) PASALINTAS — dengdavo/stumdavo realu
     // turini kituose ekranuose (zr. UI_ShowAdultGreeting pastaba). Vaiku
     // ekranas lieka paprastas: vardas + akys, be papildomo teksto.
+    createSoundButtonIfAvailable(s_scrChild, p.id);
     createMenuButton(s_scrChild);
-
-    // TODO (v2): audio.playFile(p.greetingAudioFile) — admin panele + I2S.
 
     lv_screen_load_anim(s_scrChild, LV_SCR_LOAD_ANIM_OVER_LEFT, 300, 0, false);
 }
@@ -251,6 +282,7 @@ void UI_ShowAdultGreeting(const PersonProfile &p) {
     lv_obj_set_style_text_color(contentBox, lv_color_white(), 0);
     lv_obj_align(contentBox, LV_ALIGN_CENTER, 0, 120);
     // Sukurtas PASKUTINIS — lieka VIRSUJE z-tvarkoje, visada paspaudziamas.
+    createSoundButtonIfAvailable(s_scrAdult, p.id);
     createMenuButton(s_scrAdult);
 
     lv_screen_load_anim(s_scrAdult, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);
@@ -287,6 +319,7 @@ void UI_ShowPublicGreeting(const PersonProfile &p) {
     // pastaba (dengdavo/stumdavo realu turini). Viesas profilis lieka
     // paprastas: TIK vardas, be jokios asmenines/privacios zinutes.
     // Sukurtas PASKUTINIS — lieka VIRSUJE z-tvarkoje, visada paspaudziamas.
+    createSoundButtonIfAvailable(s_scrPublic, p.id);
     createMenuButton(s_scrPublic);
 
     lv_screen_load_anim(s_scrPublic, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);

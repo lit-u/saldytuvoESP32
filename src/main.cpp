@@ -24,12 +24,15 @@
 #include <ESPAsyncWebServer.h>
 #include <lvgl.h>
 
+#include <LittleFS.h>
+
 #include "io_extension.h"
 #include "lcd_st7796.h"
 #include "touch_ft6336.h"
 #include "app_state_machine.h"
 #include "family_messages.h"
 #include "deep_sleep.h"
+#include "audio_output.h"
 
 // ---------------------------------------------------------------------------
 // KONFIGURACIJA
@@ -371,7 +374,67 @@ static String buildAdminPage() {
         html += "</textarea><br><br>";
         html += "<button type='submit'>Išsaugoti</button></fieldset>";
         html += "</form>";
+
+        // Balso žinutė (2026-09-05, vartotojo pastaba: "irasymas vyksta
+        // html, mums reikia tik atkurimo") — irasoma NARSYKLEJE (Web Audio
+        // API), NE ESP32 mikrofonu (ES7210 nenaudojamas). Paspaudus
+        // "Garsas" prietaise, ESP32 atkuria SI faila per ES8311.
+        html += "<fieldset><legend>" + escapeHtml(String(p.publicName)) + " — balso žinutė</legend>";
+        html += "<button type='button' id='rec-start-" + String((int)person) +
+                "' onclick='startRec(" + String((int)person) + ")'>🎤 Įrašyti</button> ";
+        html += "<button type='button' id='rec-stop-" + String((int)person) +
+                "' onclick='stopRec(" + String((int)person) + ")' disabled>⏹ Stop</button> ";
+        html += "<span id='rec-status-" + String((int)person) + "'></span>";
+        html += "</fieldset>";
     }
+
+    // Bendra JS visiems irasymo mygtukams — irasoma narsykles mikrofonu,
+    // downsample'inama i 16kHz/16bit/mono WAV (ta patį formatą, kuri
+    // Audio_PlayFile() tikisi, zr. lib/audio_output/), siunciama tiesiai
+    // kaip binarinis POST body (ne multipart/form-data — paprasciau ESP32
+    // pusei, zr. initWebServer() /admin/audio onBody).
+    html += "<script>"
+            "let _actx,_src,_proc,_chunks,_stream;"
+            "async function startRec(p){"
+            "_chunks=[];"
+            "_stream=await navigator.mediaDevices.getUserMedia({audio:true});"
+            "_actx=new(window.AudioContext||window.webkitAudioContext)();"
+            "_src=_actx.createMediaStreamSource(_stream);"
+            "_proc=_actx.createScriptProcessor(4096,1,1);"
+            "_proc.onaudioprocess=function(e){_chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));};"
+            "_src.connect(_proc);_proc.connect(_actx.destination);"
+            "document.getElementById('rec-start-'+p).disabled=true;"
+            "document.getElementById('rec-stop-'+p).disabled=false;"
+            "document.getElementById('rec-status-'+p).textContent='Įrašoma...';"
+            "}"
+            "function stopRec(p){"
+            "_proc.disconnect();_src.disconnect();"
+            "_stream.getTracks().forEach(t=>t.stop());"
+            "let total=0;_chunks.forEach(a=>total+=a.length);"
+            "let merged=new Float32Array(total),off=0;"
+            "_chunks.forEach(a=>{merged.set(a,off);off+=a.length;});"
+            "let ratio=_actx.sampleRate/16000;"
+            "let newLen=Math.floor(merged.length/ratio);"
+            "let rs=new Float32Array(newLen);"
+            "for(let i=0;i<newLen;i++)rs[i]=merged[Math.floor(i*ratio)];"
+            "let buf=new ArrayBuffer(44+rs.length*2),v=new DataView(buf);"
+            "function ws(o,s){for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));}"
+            "ws(0,'RIFF');v.setUint32(4,36+rs.length*2,true);ws(8,'WAVE');ws(12,'fmt ');"
+            "v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);"
+            "v.setUint32(24,16000,true);v.setUint32(28,32000,true);"
+            "v.setUint16(32,2,true);v.setUint16(34,16,true);ws(36,'data');"
+            "v.setUint32(40,rs.length*2,true);"
+            "let o=44;for(let i=0;i<rs.length;i++){let s=Math.max(-1,Math.min(1,rs[i]));"
+            "v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;}"
+            "document.getElementById('rec-status-'+p).textContent='Siunčiama...';"
+            "fetch('/admin/audio?person='+p,{method:'POST',body:buf})"
+            ".then(r=>{document.getElementById('rec-status-'+p).textContent=r.ok?'Išsaugota!':'Klaida';})"
+            ".catch(()=>{document.getElementById('rec-status-'+p).textContent='Klaida';});"
+            "document.getElementById('rec-start-'+p).disabled=false;"
+            "document.getElementById('rec-stop-'+p).disabled=true;"
+            "}"
+            "</script>";
+
     html += "</body></html>";
     return html;
 }
@@ -405,6 +468,46 @@ void initWebServer() {
     s_webServer.on("/admin", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "text/html; charset=utf-8", buildAdminPage());
     });
+
+    // Balso zinutes ikelimas — RAW binarinis POST body (narsykles JS siuncia
+    // WAV baitus tiesiogiai, ne multipart/form-data), issaugoma LittleFS
+    // "/audio/<person>.wav". Statinis s_uploadFile — sitas admin irankis
+    // vienu metu naudojamas VIENO zmogaus (seimos adminke), lygiagretumas
+    // NEREIKALINGAS.
+    s_webServer.on(
+        "/admin/audio", HTTP_POST,
+        [](AsyncWebServerRequest *request) {
+            request->send(200, "text/plain", "OK");
+        },
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            static File s_uploadFile;
+            if (index == 0) {
+                int personIdx = request->hasParam("person") ? request->getParam("person")->value().toInt() : 0;
+                if (personIdx <= 0 || personIdx >= PERSON_COUNT) {
+                    Serial.println("[Audio] /admin/audio: neteisingas 'person' parametras.");
+                    return;
+                }
+                // PASTABA 2026-09-05: "/audio/<n>.wav" (pakatalogyje) NEPAVYKO —
+                // LittleFS.mkdir("/audio") tyliai neveike ("no permits for
+                // creation"), o LittleFS.open() i neegzistuojanti katalogo
+                // kelia irgi tyliai nepavykdavo (be klaidos kodo grazinimo).
+                // FIX: failai saugomi PLOKSCIAI saknyje ("/audio_N.wav"),
+                // be jokio pakatalogio — pasalina visa priezasti.
+                String path = "/audio_" + String(personIdx) + ".wav";
+                s_uploadFile = LittleFS.open(path, "w");
+                Serial.printf("[Audio] Irasoma: %s\n", path.c_str());
+            }
+            if (s_uploadFile) {
+                s_uploadFile.write(data, len);
+            }
+            if (index + len == total) {
+                if (s_uploadFile) {
+                    s_uploadFile.close();
+                    Serial.printf("[Audio] Ikelta, %u baitu.\n", (unsigned)total);
+                }
+            }
+        });
 
     s_webServer.on("/admin/message", HTTP_POST, [](AsyncWebServerRequest *request) {
         if (request->hasParam("person", true) && request->hasParam("text", true)) {
@@ -473,6 +576,19 @@ void setup() {
     Touch_FT6336_Init(Wire);
 
     FamilyMessages_Init();
+
+    // 2026-09-05: "Garsas" mygtuko funkcijai — balso zinutes issaugomos
+    // LittleFS (SD kortele neveikianti, zr. initSDCard() klaida virs).
+    // `true` = suformatuoti, jei pirma karta/klaida (saugu — TIK sis
+    // failu saugykla, atskira nuo NVS kur laikomos tekstines zinutes).
+    if (!LittleFS.begin(true)) {
+        Serial.println("[LittleFS] KLAIDA: nepavyko inicijuoti/formatuoti.");
+    }
+    // ES8311 (garsiakalbis) — TIK atkurimas, mikrofono kodekas (ES7210)
+    // nenaudojamas (irasymas vyksta narsykleje, zr. main.cpp /admin puslapio
+    // JS). Klaida cia NESUSTABDO likusios sistemos — garsas tik papildoma
+    // funkcija, ne kritinis kelias.
+    Audio_Init();
 
     // 2026-09-05: KVIECIAMA VISADA (ne tik DEVELOPMENT_MODE) — adminke
     // (http://<ip>/admin, seimos zinuciu redagavimas) yra reali produkto
