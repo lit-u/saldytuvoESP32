@@ -430,7 +430,43 @@ Vietoj tiesiog "Nepazinau" -> miegoti: (1) dinamiskas busenos tekstas kiekvienai
 
 LVGL numatytieji `lv_font_montserrat_*` sriftai apima tik Basic Latin + Latin-1 — Lietuviskos raides (Latin Extended-A) NETURI, todel visas tekstas anksciau buvo be diakritiku. Pirmas bandymas su `lv_font_conv` sugeneruotais sriftais NEVEIKE ("visai nesimato raidziu") — priezastis rasta per LVGL GitHub issue #8480 (identiskas simptomas): `lv_conf.h` turi `LV_USE_FONT_COMPRESSED 0`, kas VISISKAI isjungia suglaudintu (RLE) sriftu dekodavima, o `lv_font_conv` PAGAL NUTYLEJIMA generuoja suglaudinta formata. **Pataisymas:** generuoti su `--no-compress --no-prefilter` (zr. `lib/lv_fonts_lt/lv_fonts_lt.h` komentara su pilna regeneravimo komanda). Saltinis — Windows `segoeui.ttf` (Montserrat TTF sioje masinoje nebuvo). Papildomai pridetas atskiras `vocativeName` laukas `PersonProfile` (kreipiniui — "Sveikas, Sauliau", ne "Sveikas, Saulius") ir sriftu dydziai sumazinti ~10% visur.
 
-### Neatlikta / sekantis kartas
+### Neatlikta / sekantis kartas (siai sesijos daliai)
 
-- Vizualus "kiek telpa" teksto testo (visi komplimentai vienu metu Adult/Child/Public ekranuose) rezultatu peržiūra ir suredagavimas i realu turini.
-- **Admin panele per WiFi** — planuojama: (a) paprasta HTML forma tevams vietiniame tinkle (dienos zinutes/komplimentai), (b) platesne adminke savininkui (AE/gain, timeout'ai, tekstai) — viskas saugoma ESP32 Preferences/NVS, be USB flash'inimo.
+- Vizualus "kiek telpa" teksto testo rezultatu peržiūra — IŠSPRESTA sekancioje sesijos dalyje (zr. zemiau), pasirode, kad testo blokas dengdavo realu turini.
+- **Admin panele per WiFi** — IGYVENDINTA sekancioje sesijos dalyje (zr. zemiau).
+
+## Sesija 2026-09-05 (testis) — Meniu mygtuko UX, admin panele, garso atkurimas
+
+### Meniu mygtuko pataisymai
+
+Vartotojo pastaba: apacioje kaireje esantis "Meniu" mygtukas uzdengdavo busenos teksta. Perkeltas i VIRSU KAIRE, tapo apvalus su viena raide "M" — uzima maziau vietos, nebekonfliktuoja su niekuo kitu ekrane.
+
+### "Kiek telpa" testo pasekmes — TIKRA zinute buvo dengiama testinio teksto
+
+Po testo (visi 4 komplimentai vienu metu Adult/Child/Public ekranuose), vartotojas pastebejo: **jo PATIES per admin panele irasyta asmenine zinute NEBERODOMA** — testinis blokas uzemdavo TA PACIA vieta. **Pataisyta:** grizta prie v1 elgesio su pirmenybe — jei YRA FamilyMessages irasyta zinute, rodoma JI; jei ne, rodomas vienas atsitiktinis komplimentas (ne visi keturi vienu metu). "Kiek telpa" testinis kodas (`createInfoBlock()`) pilnai pasalintas is Child/Adult/Public ekranu.
+
+### Admin panele per WiFi (main.cpp `/admin`)
+
+Vartotojo idejos pagrindu ("gal galima per kita wifi, be flash'inimo?") — ESP32 jau turi savo `ESPAsyncWebServer` (naudotas `/snapshot` kalibravimui), tad papildyta:
+- `GET /admin` — HTML forma su visais 5 seimos nariais, kiekvienam sava `<textarea>` zinutei.
+- `POST /admin/message` — issaugo per `FamilyMessages_Set()`.
+- **Zinutes issaugomos NVS** (`Preferences` biblioteka, `family_messages.cpp`) — ISLIEKA po reboot/deep sleep, patikrinta realiu hardware (irasyta zinute, priverstas hard reset, zinute islikusi).
+- `initWebServer()` iskeltas is `DEVELOPMENT_MODE`-only blokо i VISADA kviecama funkcija (adminke — reali produkto funkcija, ne dev irankis); tik `/snapshot` lieka uzrakintas uz `DEVELOPMENT_MODE` viduje pacios funkcijos.
+
+### Garso atkurimas ("Garsas" mygtukas) — ILGA, DAUGIAETAPE diagnostika, GALUTINAI ISSPRESTA
+
+Vartotojo idėja: irasymas vyksta NARSYKLEJE (Web Audio API admin panele — TIK atkurimas, mikrofono kodekas ES7210 NENAUDOJAMAS). Naujas modulis `lib/audio_output/` (ES8311 DAC + I2S), biblioteka `pschatzmann/arduino-audio-driver` (git URL lib_dep, PlatformIO registry versijos nerasta) kodeko I2C valdymui.
+
+**Rasti ir ISTAISYTI PENKI atskiri, is eiles slepesi trukdziai** (kiekvienas savarankiskai NEBUTINAI pastebimas be kito):
+
+1. **`-std=gnu++17` reikalingas** — `arduino-audio-driver` viduje instancijuoja VISAS palaikomas kodeko klases (net nenaudojamas, pvz. TLV320AIC3104), kuriu `static constexpr` nariai be C++17 neturi savaime inline linkage'o → "undefined reference" linker klaida VISISKAI nesusijusioje kodeko klaseje.
+2. **`driver/i2s_std.h` (nauja ESP-IDF 5.x kanalu API) SIAME framework pakete NEEGZISTUOJA** (patikrinta paieska visame framework aplanke) — naudota SENA `driver/i2s.h` API.
+3. **`setMute(false)` niekada nekviecianas automatiskai** per `board.begin()` — ES8311 (kaip ir daugelis DAC lustu) pagal nutylejima lieka NUTILDYTAS apsaugai nuo "pop" triuksmo ijungiant.
+4. **`fixed_mclk` reikia AISKIAI nurodyti** sena `driver/i2s.h` API — kitaip MCLK signalas VISAI negeneruojamas ant `mck_io_num` pin'o, nors pinas nurodytas. ES8311 laukia isorinio MCLK savo PLL — be jo NEUZSIRAKINA (256×sample_rate — standartinis santykis).
+5. **KRITINE (paskutine, tikroji) priezastis: garsiakalbio stiprintuvas (NS4150B) turi ATSKIRA IJUNGIMO pin'a** ant TO PATIES CH32V003 IO pletiklio (P4), NEPRIKLAUSOMA nuo ES8311 I2C/I2S kelio. **PATVIRTINTA TIESIOGIAI oficialiame Waveshare source kode** (ne spejimas — `waveshareteam/ESP32-S3-CAM-OVxxxx`, `examples/ESP-IDF-v5.5.1/03_audio_play/components/bsp_extra/src/bsp_board_extra.c`): `Audio_PA_EN()`/`Audio_PA_DIS()` valdo `IO_EXPANDER_PIN_NUM_4` PRIES/PO kiekvieno grojimo. Be sio, ES8311 DAC generuoja TEISINGA analogini signala (visi programiniai sluoksniai — I2C, I2S driver, I2S write — raportuodavo `ESP_OK`/sekme be jokiu klaidu), bet jis niekada NEPASIEKIA girdimo lygio garsiakalbyje. Pridetas `IO_EXTENSION_AUDIO_PA_PIN` (P4) `io_extension.h`, ijungiamas pries/isjungiamas po `Audio_PlayFile()`.
+
+**Diagnostikos metodo pastaba (naudinga ateičiai):** flash'inimas + serial logger prijungimas PO reset'o PRARASDAVO visus ankstyviausius boot pranesimus (zinoma sio projekto USB-CDC ypatybe, mineta anksciau siame README) — bet BUTENT tuo metu vyksta Audio_Init()! Sprendimas: reset'as per RTS TOGGLE TIESIOGIAI is JAU atidaryto serial port'o (ne atskiras esptool + veluojantis logger'io prisijungimas) — leido pagauti PILNA boot seka nuo pirmo baito.
+
+**Antra pamoka:** kai vartotojas negalejo issiaiskinti toliau, jam pateikta PILNA technine santrauka nusinesti i kita AI pokalbi (ChatGPT) — gautas TIKSLUS, patikrinamas kaltininko pasiulymas (P4 amp enable), kuris PASITVIRTINO patikrinus TIESIOGIAI oficialiame source kode (ne aklai pasitikint). **Antrinių AI pasiūlymų patikrinimas prieš patį šaltinį — pakartotas principas šiame projekte (žr. Qualcomm modelio klaidą aukščiau).**
+
+**GALUTINIS REZULTATAS: PATVIRTINTA REALIU HARDWARE** — vartotojas išgirdo testinį garsą per kolonėlę po visų penkių pataisymų.
