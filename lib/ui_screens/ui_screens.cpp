@@ -107,27 +107,6 @@ static void createNameButton(lv_obj_t *parent, RecognizedPerson person,
     lv_obj_center(lbl);
 }
 
-// Bendras "kiek telpa" info blokas (vartotojo pastaba 2026-09-05: "pabandyk
-// i kiekvieno puslapi irasyti kuo daugiau teksto kiek telpa") — visi
-// komplimentai iskart, ne tik vienas atsitiktinis, kad butu matyti realus
-// tekstо talpumas ekrane.
-static lv_obj_t *createInfoBlock(lv_obj_t *parent, int32_t yOffset, lv_color_t color) {
-    lv_obj_t *block = lv_label_create(parent);
-    lv_label_set_long_mode(block, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(block, LV_PCT(85));
-    String joined;
-    for (size_t i = 0; i < ADULT_COMPLIMENTS_COUNT; i++) {
-        if (i > 0) joined += "\n";
-        joined += ADULT_COMPLIMENTS[i];
-    }
-    lv_label_set_text(block, joined.c_str());
-    lv_obj_set_style_text_font(block, &lv_font_lt_20, 0);
-    lv_obj_set_style_text_align(block, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(block, color, 0);
-    lv_obj_align(block, LV_ALIGN_CENTER, 0, yOffset);
-    return block;
-}
-
 void UI_Screens_Init(void (*onMenuPressed)()) {
     s_onMenuPressed = onMenuPressed;
 
@@ -221,10 +200,9 @@ void UI_ShowChildGreeting(const PersonProfile &p) {
     lv_obj_set_style_opa(greeting, LV_OPA_TRANSP, 0);
     lv_obj_fade_in(greeting, 400, 0);
 
-    // "Kiek telpa" testas (vartotojo pastaba 2026-09-05).
-    createInfoBlock(s_scrChild, 150, lv_color_white());
-    // Sukurtas PASKUTINIS (po infoBlock) — lieka VIRSUJE z-tvarkoje, tad
-    // visada paspaudziamas, net jei tekstas vizualiai priartetu.
+    // "Kiek telpa" testas (2026-09-05) PASALINTAS — dengdavo/stumdavo realu
+    // turini kituose ekranuose (zr. UI_ShowAdultGreeting pastaba). Vaiku
+    // ekranas lieka paprastas: vardas + akys, be papildomo teksto.
     createMenuButton(s_scrChild);
 
     // TODO (v2): audio.playFile(p.greetingAudioFile) — admin panele + I2S.
@@ -252,21 +230,26 @@ void UI_ShowAdultGreeting(const PersonProfile &p) {
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
     lv_obj_align(greeting, LV_ALIGN_CENTER, 0, 35);
 
-    // "Kiek telpa" testas (vartotojo pastaba 2026-09-05) — VISI komplimentai
-    // iskart, ne tik vienas atsitiktinis, kad matytusi realus talpumas.
-    createInfoBlock(s_scrAdult, 130, lv_color_white());
-
-    // Seimos zinute (tekstine, jei yra) — v2: rasoma per admin web panele.
+    // KLAIDA rasta 2026-09-05 (vartotojo pastaba: "mano zinutes sau nerodo,
+    // o rodo tas 4 tavo") — "kiek telpa" testo blokas (VISI komplimentai
+    // iskart) uzimdavo/dengdavo TA PACIA vieta, kur turejo rodytis TIKRA
+    // asmenine zinute is admin panele (zr. main.cpp /admin). FIX: PIRMENYBE
+    // TIKRAI zinutei is FamilyMessages (admin panele irasyta) — jei jos
+    // nera, rodomas TIK VIENAS atsitiktinis komplimentas (grizta prie
+    // pradinio v1 elgesio), NE visi keturi vienu metu.
     const FamilyMessage &msg = FamilyMessages_Get(p.id);
+    lv_obj_t *contentBox = lv_label_create(s_scrAdult);
+    lv_label_set_long_mode(contentBox, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(contentBox, LV_PCT(85));
+    lv_obj_set_style_text_align(contentBox, LV_TEXT_ALIGN_CENTER, 0);
     if (msg.hasMessage) {
-        lv_obj_t *msgBox = lv_label_create(s_scrAdult);
-        lv_label_set_long_mode(msgBox, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(msgBox, LV_PCT(85));
-        lv_label_set_text_fmt(msgBox, "Žinutė: %s", msg.text);
-        lv_obj_set_style_text_font(msgBox, &lv_font_lt_18, 0);
-        lv_obj_set_style_text_color(msgBox, p.themeAccent, 0);
-        lv_obj_align(msgBox, LV_ALIGN_BOTTOM_MID, 0, -70);
+        lv_label_set_text(contentBox, msg.text);
+    } else {
+        lv_label_set_text(contentBox, ADULT_COMPLIMENTS[millis() % ADULT_COMPLIMENTS_COUNT]);
     }
+    lv_obj_set_style_text_font(contentBox, &lv_font_lt_20, 0);
+    lv_obj_set_style_text_color(contentBox, lv_color_white(), 0);
+    lv_obj_align(contentBox, LV_ALIGN_CENTER, 0, 120);
     // Sukurtas PASKUTINIS — lieka VIRSUJE z-tvarkoje, visada paspaudziamas.
     createMenuButton(s_scrAdult);
 
@@ -300,8 +283,9 @@ void UI_ShowPublicGreeting(const PersonProfile &p) {
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
     lv_obj_align(greeting, LV_ALIGN_CENTER, 0, 50);
 
-    // "Kiek telpa" testas (vartotojo pastaba 2026-09-05).
-    createInfoBlock(s_scrPublic, 130, lv_color_white());
+    // "Kiek telpa" testas (2026-09-05) PASALINTAS — zr. UI_ShowAdultGreeting
+    // pastaba (dengdavo/stumdavo realu turini). Viesas profilis lieka
+    // paprastas: TIK vardas, be jokios asmenines/privacios zinutes.
     // Sukurtas PASKUTINIS — lieka VIRSUJE z-tvarkoje, visada paspaudziamas.
     createMenuButton(s_scrPublic);
 
