@@ -85,9 +85,19 @@ static void soundButtonEventCb(lv_event_t *e) {
     lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
 
+    // KLAIDA rasta 2026-09-05 (vartotojo pastaba: "nebuvo uzraso 'Grojama'")
+    // — lv_timer_handler() cia NEVEIKE, nes SI funkcija PATI kvieciama IS
+    // VIDAUS lv_timer_handler() (indev/lietimo apdorojimo dalies) — rekursinis
+    // kvietimas paciam sau LVGL tyliai ignoruojamas (apsauga nuo reentrancy).
+    // FIX: lv_refr_now() — zemesnio lygio, TIESIOGINIS piesimo iskvietimas,
+    // saugus is event callback konteksto (nesikreipia i indev/task ciklą).
+    // Vartotojo pastaba 2026-09-05: "uzrasas nesimato del balto fono" —
+    // baltas fonas + numatytas (baltas) teksto spalva = nematomas kontrastas.
+    // Pakeista i zalia (teksto spalva jau nustatyta balta createSoundButton...
+    // funkcijoje — prie zalio fono aiskiai matoma).
     lv_label_set_text(lbl, LV_SYMBOL_AUDIO " Grojama...");
-    lv_obj_set_style_bg_color(btn, lv_color_white(), 0);
-    lv_timer_handler();  // priverstinis piesimas PRIES blokuojanti groja
+    lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_GREEN), 0);
+    lv_refr_now(NULL);
 
     char path[32];
     snprintf(path, sizeof(path), "/audio_%d.wav", (int)person);
@@ -106,12 +116,16 @@ static void createSoundButtonIfAvailable(lv_obj_t *parent, RecognizedPerson pers
     lv_obj_set_size(btn, 120, 48);
     lv_obj_set_style_radius(btn, 24, 0);
     lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    lv_obj_set_style_bg_color(btn, lv_color_white(), LV_STATE_PRESSED);  // tuojautinis lietimo atsakas
+    // Baltas fonas cia buvo klaida (vartotojo pastaba: "uzrasas nesimato del
+    // balto fono") — teksto spalva taip pat balta, tad dingdavo. Tamsesnis
+    // atspalvis islaiko kontrasta su baltu tekstu.
+    lv_obj_set_style_bg_color(btn, lv_palette_darken(LV_PALETTE_ORANGE, 2), LV_STATE_PRESSED);
     lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -14);
     lv_obj_add_event_cb(btn, soundButtonEventCb, LV_EVENT_CLICKED, (void *)(intptr_t)person);
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, LV_SYMBOL_AUDIO " Garsas");
     lv_obj_set_style_text_font(lbl, &lv_font_lt_20, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
     lv_obj_center(lbl);
 }
 

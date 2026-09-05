@@ -1,5 +1,6 @@
 #include "audio_output.h"
 #include "AudioBoard.h"
+#include "io_extension.h"
 #include <Wire.h>
 #include <FS.h>
 #include <LittleFS.h>
@@ -55,8 +56,8 @@ bool Audio_Init() {
         Serial.flush();
         return false;
     }
-    s_board.setVolume(80);
-    Serial.println("[Audio] Init: setVolume(80) atlikta");
+    s_board.setVolume(100);  // 2026-09-05: maksimalus, kol garso apskritai negirdeti
+    Serial.println("[Audio] Init: setVolume(100) atlikta");
     Serial.flush();
 
     // KLAIDA rasta 2026-09-05 (vartotojo pastaba: "paspaudus nieko
@@ -74,13 +75,29 @@ bool Audio_Init() {
     i2sConfig.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
     i2sConfig.sample_rate = AUDIO_SAMPLE_RATE;
     i2sConfig.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-    i2sConfig.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;  // stereo (mono dubliuojamas L+R)
+    // 2026-09-05: pakeista is RIGHT_LEFT (rankiniu budu dubliuotas mono i
+    // abu kanalus) i TIKRA mono rezima — ES8311 registrai (es8311.init())
+    // sukonfigūruoti PER codec_cfg tikintis MONO slot isdestymo, tad
+    // ONLY_LEFT geriau atitinka, negu priverstinis stereo su identiskais
+    // kanalais. Bandoma isspresti "nieko nesigirdi" problema.
+    i2sConfig.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
     i2sConfig.communication_format = I2S_COMM_FORMAT_STAND_I2S;
     i2sConfig.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
     i2sConfig.dma_buf_count = 4;
     i2sConfig.dma_buf_len = 256;
     i2sConfig.use_apll = false;
     i2sConfig.tx_desc_auto_clear = true;
+    // KLAIDA rasta 2026-09-05 (vartotojo pastaba: "nieko nesigirdi", nors
+    // I2C init + I2S write viskas raportuoja sekme) — SENA "driver/i2s.h"
+    // API NEGENERUOJA MCLK signalo ant mck_io_num pin'o, jei "fixed_mclk"
+    // NENURODYTAS (paliktas 0 default). ES8311 initas nustato
+    // setMclkSrc(FROM_MCLK_PIN) — kodekas LAUKIA tikro isorinio MCLK savo
+    // vidiniam PLL, be jo garsas lieka tylus (PLL neuzsirakina), NORS I2S
+    // duomenu linija (BCLK/WS/DATA) veikia visiskai normaliai — TODEL visos
+    // ankstesnes patikros (i2s_write sekme ir t.t.) NEPAGAVO sios klaidos.
+    // Standartinis MCLK santykis daugeliui kodeku (tarp ju ES8311) — 256x
+    // sample rate.
+    i2sConfig.fixed_mclk = AUDIO_SAMPLE_RATE * 256;
 
     esp_err_t err = i2s_driver_install(I2S_PORT, &i2sConfig, 0, nullptr);
     Serial.printf("[Audio] Init: i2s_driver_install = %d (%s)\n", err, esp_err_to_name(err));
@@ -138,22 +155,29 @@ bool Audio_PlayFile(const char *path) {
     Serial.flush();
     f.seek(44);  // standartine WAV antraste
 
+    // KRITINE KLAIDA rasta 2026-09-05 (patikrinta TIESIOGIAI oficialiame
+    // Waveshare source kode — waveshareteam/ESP32-S3-CAM-OVxxxx,
+    // examples/ESP-IDF-v5.5.1/03_audio_play/.../bsp_board_extra.c) —
+    // garsiakalbio STIPRINTUVAS (NS4150B) turi ATSKIRA IJUNGIMO pin'a
+    // (CH32V003 EXIO P4), NEPRIKLAUSOMA nuo ES8311 I2C/I2S. Be sio, ES8311
+    // DAC gali generuoti TEISINGA analogini signala, bet jis niekada
+    // nepasiekia garsiakalbio girdimu lygiu — TIKSLIAI atitiko musu
+    // simptoma (visi programiniai sluoksniai raportavo sekme, bet garso
+    // NEBUVO). Oficialus kodas ijungia PRIES grojant, isjungia po/pries.
+    IO_EXTENSION_Output(IO_EXTENSION_AUDIO_PA_PIN, 1);
+
+    // 2026-09-05: TIKRAS mono (I2S_CHANNEL_FMT_ONLY_LEFT) — nebereikia
+    // dubliuoti i L+R, monoBuf raso tiesiai.
     const size_t CHUNK_SAMPLES = 256;
     int16_t monoBuf[CHUNK_SAMPLES];
-    int16_t stereoBuf[CHUNK_SAMPLES * 2];
     size_t totalWritten = 0;
     int chunkCount = 0;
 
     while (f.available()) {
         size_t bytesRead = f.read((uint8_t *)monoBuf, sizeof(monoBuf));
-        size_t samplesRead = bytesRead / sizeof(int16_t);
-        if (samplesRead == 0) break;
-        for (size_t i = 0; i < samplesRead; i++) {
-            stereoBuf[i * 2] = monoBuf[i];
-            stereoBuf[i * 2 + 1] = monoBuf[i];
-        }
+        if (bytesRead == 0) break;
         size_t bytesWritten = 0;
-        esp_err_t werr = i2s_write(I2S_PORT, stereoBuf, samplesRead * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+        esp_err_t werr = i2s_write(I2S_PORT, monoBuf, bytesRead, &bytesWritten, portMAX_DELAY);
         totalWritten += bytesWritten;
         chunkCount++;
         if (werr != ESP_OK) {
@@ -162,6 +186,7 @@ bool Audio_PlayFile(const char *path) {
         }
     }
     f.close();
+    IO_EXTENSION_Output(IO_EXTENSION_AUDIO_PA_PIN, 0);  // isjungti stiprintuva, kai negrojama
     Serial.printf("[Audio] Play: baigta — %d chunk'u, %u baitu israsyta i I2S\n", chunkCount, (unsigned)totalWritten);
     Serial.flush();
     return true;

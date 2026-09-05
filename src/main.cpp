@@ -463,6 +463,18 @@ void initWebServer() {
             });
         request->send(response);
     });
+
+    // Garso derinimo pagalba (2026-09-05) — leidzia paleisti bet kuri
+    // "/audio_N.wav" faila TIESIOGIAI per curl, be poreikio liesti fizini
+    // ekrana kiekvienam bandymui. TIK dev metu, PASALINTI kartu su likusiu
+    // DEVELOPMENT_MODE blocku.
+    s_webServer.on("/testsound", HTTP_GET, [](AsyncWebServerRequest *request) {
+        int personIdx = request->hasParam("person") ? request->getParam("person")->value().toInt() : 5;
+        char path[32];
+        snprintf(path, sizeof(path), "/audio_%d.wav", personIdx);
+        bool ok = Audio_PlayFile(path);
+        request->send(ok ? 200 : 500, "text/plain", ok ? "OK" : "KLAIDA");
+    });
 #endif
 
     s_webServer.on("/admin", HTTP_GET, [](AsyncWebServerRequest *request) {
