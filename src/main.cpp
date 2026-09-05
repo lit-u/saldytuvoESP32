@@ -315,7 +315,72 @@ void initDisplay() {
 // kalibravimo irankiui — liko tik paprastas, PATIKIMAI veikiantis /snapshot.
 static AsyncWebServer s_webServer(80);
 
+// --- Admin panele (2026-09-05) ----------------------------------------------
+// Seimos zinuciu redagavimas per WiFi, be USB flash'inimo (vartotojo
+// pastaba: "gal galima per kita wifi?" — taip, ESP32 jau turi savo web
+// serveri). Zinutes issaugomos i NVS (zr. family_messages.cpp), tad islieka
+// po perkrovimo/deep sleep. TYCIA VISADA veikianti (NE tik DEVELOPMENT_MODE)
+// — tai reali produkto funkcija, ne dev irankis (zr. initWebServer()
+// struktura zemiau — TIK /snapshot lieka DEVELOPMENT_MODE-only).
+static String escapeHtml(const String &s) {
+    String out;
+    out.reserve(s.length());
+    for (size_t i = 0; i < s.length(); i++) {
+        char c = s[i];
+        switch (c) {
+            case '&':  out += "&amp;"; break;
+            case '<':  out += "&lt;"; break;
+            case '>':  out += "&gt;"; break;
+            case '"':  out += "&quot;"; break;
+            default:   out += c; break;
+        }
+    }
+    return out;
+}
+
+static String buildAdminPage() {
+    String html;
+    html.reserve(2048);
+    html += "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            "<title>Saldytuvo adminke</title>"
+            "<style>body{font-family:sans-serif;max-width:480px;margin:20px auto;"
+            "padding:0 16px;background:#f5f5f5;}"
+            "h2{color:#2C3E50;}"
+            "fieldset{margin-bottom:20px;border-radius:10px;border:1px solid #ccc;"
+            "background:#fff;padding:14px;}"
+            "legend{font-weight:bold;padding:0 6px;}"
+            "textarea{width:100%;box-sizing:border-box;font-size:16px;font-family:inherit;"
+            "border-radius:6px;border:1px solid #ccc;padding:8px;}"
+            "button{padding:10px 20px;font-size:16px;border:none;border-radius:6px;"
+            "background:#2C3E50;color:#fff;cursor:pointer;}"
+            "button:active{background:#1a2530;}</style></head><body>"
+            "<h2>Šeimos žinutės</h2>"
+            "<p>Parašyk žinutę, kurią pamatys tas žmogus, kai dėžutė jį atpažins "
+            "(arba pats save pasirinks meniu).</p>";
+
+    for (int i = 1; i < PERSON_COUNT; i++) {
+        RecognizedPerson person = (RecognizedPerson)i;
+        const PersonProfile &p = FamilyProfiles_Get(person);
+        const FamilyMessage &msg = FamilyMessages_Get(person);
+        html += "<form method='POST' action='/admin/message'>";
+        html += "<fieldset><legend>" + escapeHtml(String(p.publicName)) + "</legend>";
+        html += "<input type='hidden' name='person' value='" + String((int)person) + "'>";
+        html += "<textarea name='text' rows='3' placeholder='Žinutės nėra'>";
+        if (msg.hasMessage) html += escapeHtml(String(msg.text));
+        html += "</textarea><br><br>";
+        html += "<button type='submit'>Išsaugoti</button></fieldset>";
+        html += "</form>";
+    }
+    html += "</body></html>";
+    return html;
+}
+
 void initWebServer() {
+#ifdef DEVELOPMENT_MODE
+    // Kadravimo/atstumo kalibravimo pagalba — TIK dev metu, zr. platesne
+    // pastaba virs (PASALINTI su DEVELOPMENT_MODE flag'u pries gamybini
+    // flash'inima).
     s_webServer.on("/snapshot", HTTP_GET, [](AsyncWebServerRequest *request) {
         camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) {
@@ -335,9 +400,30 @@ void initWebServer() {
             });
         request->send(response);
     });
+#endif
+
+    s_webServer.on("/admin", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html; charset=utf-8", buildAdminPage());
+    });
+
+    s_webServer.on("/admin/message", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (request->hasParam("person", true) && request->hasParam("text", true)) {
+            int personIdx = request->getParam("person", true)->value().toInt();
+            String text = request->getParam("text", true)->value();
+            text.trim();
+            if (personIdx > 0 && personIdx < PERSON_COUNT) {
+                if (text.length() == 0) {
+                    FamilyMessages_Clear((RecognizedPerson)personIdx);
+                } else {
+                    FamilyMessages_Set((RecognizedPerson)personIdx, text.c_str());
+                }
+            }
+        }
+        request->redirect("/admin");
+    });
 
     s_webServer.begin();
-    Serial.printf("[WebServer] /snapshot pasiekiamas: http://%s/snapshot\n",
+    Serial.printf("[WebServer] Adminke pasiekiama: http://%s/admin\n",
                   WiFi.localIP().toString().c_str());
 }
 
@@ -386,17 +472,16 @@ void setup() {
     initDisplay();
     Touch_FT6336_Init(Wire);
 
-#ifdef DEVELOPMENT_MODE
-    // Kadravimo/atstumo kalibravimo pagalba: HTTP /snapshot (zr. initWebServer())
-    // vietoj tiesioginio vaizdo pacaime LCD — bandyta LVGL canvas + jpg2rgb565,
-    // bet gauta rimta duomenu "plesymo" (tearing) klaida (SPI flush lenktyniauja
-    // su buferio perrasymu), be to net teisingai suderintos spalvos butu tik
-    // kosmetinis patobulinimas siam pagalbiniam irankiui — PASALINTA, zr. git
-    // istorija jei reikes grizti. Naršyklė dekoduoja tikra JPEG teisingai visada.
-    initWebServer();
-#endif
-
     FamilyMessages_Init();
+
+    // 2026-09-05: KVIECIAMA VISADA (ne tik DEVELOPMENT_MODE) — adminke
+    // (http://<ip>/admin, seimos zinuciu redagavimas) yra reali produkto
+    // funkcija, ne dev irankis. Tik /snapshot (kadravimo pagalba) lieka
+    // uzrakintas uz DEVELOPMENT_MODE viduje pacios initWebServer() (zr.
+    // funkcijos apibrezima) — PASALINTI kartu su flag'u pries gamybini
+    // flash'inima.
+    initWebServer();
+
     AppStateMachine_Init();
 
     // v1 "stupid simple": kiekvienas paleidimas (tiek pirmas USB power-on,
