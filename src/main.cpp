@@ -53,9 +53,15 @@ static const char *TIME_ZONE = "EET-2EEST,M3.5.0/3,M10.5.0/4";
 
 // --- Bendra I2C magistrale (patikrinta schema: IO7=SCL, IO8=SDA) ---
 // Ant sios magistrales kabo: CH32V003 EXIO pletiklis (0x24), FT6336 touch
-// (0x38), audio kodekai (nenaudojami dar).
+// (0x38), ES8311 (0x18) ir ES7210 (0x40) audio kodekai.
 static const int I2C_SDA_PIN = 8;
 static const int I2C_SCL_PIN = 7;
+
+// --- Balso zinutes irasymas per irenginio mikrofona (admin panele) ---
+// 2026-09-05 (vartotojo pastaba: "Pavyko. Bet nutrauke antra sakini. Koks
+// limitas?") — pradzioje 6000ms per trumpa dviem sakiniams, padidinta iki
+// 12000ms.
+static const uint32_t MIC_RECORD_DURATION_MS = 12000;
 
 // --- SD kortele (pagrindines plokstes lizdas, native SDMMC 1-bit) ---
 // PATIKRINTA pagal Waveshare BSP (bsp_sdcard_sdmmc_mount): CLK=IO16,
@@ -375,69 +381,70 @@ static String buildAdminPage() {
         html += "<button type='submit'>Išsaugoti</button></fieldset>";
         html += "</form>";
 
-        // Balso žinutė (2026-09-05, vartotojo pastaba: "irasymas vyksta
-        // html, mums reikia tik atkurimo") — irasoma NARSYKLEJE (Web Audio
-        // API), NE ESP32 mikrofonu (ES7210 nenaudojamas). Paspaudus
-        // "Garsas" prietaise, ESP32 atkuria SI faila per ES8311.
+        // Balso žinutė — 2026-09-05: keliauta per keleta variantu (narsykles
+        // mikrofonas su getUserMedia, failo ikelimas su decodeAudioData),
+        // bet visi turejo naršykles/OS suderinamumo apribojimu (Safari
+        // nera apejimo http:// atveju). GALUTINIS sprendimas (vartotojo
+        // pastaba: "super, bet isimk ir windows ir Mac ir failo pasirinkima")
+        // — TIK irasymas TIESIOGIAI per irenginio ES7210 mikrofona, paprasta
+        // ir veikia visiems vienodai (reikia stoveti prie saldytuvo).
         html += "<fieldset><legend>" + escapeHtml(String(p.publicName)) + " — balso žinutė</legend>";
-        html += "<button type='button' id='rec-start-" + String((int)person) +
-                "' onclick='startRec(" + String((int)person) + ")'>🎤 Įrašyti</button> ";
-        html += "<button type='button' id='rec-stop-" + String((int)person) +
-                "' onclick='stopRec(" + String((int)person) + ")' disabled>⏹ Stop</button> ";
-        html += "<span id='rec-status-" + String((int)person) + "'></span>";
+        html += "<p style='font-size:14px;color:#555;margin-top:0;'>Paspausk ir kalbek prie šaldytuvo "
+                "(" + String((int)(MIC_RECORD_DURATION_MS / 1000)) + "s):</p>";
+        html += "<button type='button' id='rec-mic-" + String((int)person) +
+                "' onclick='recordViaDevice(" + String((int)person) + ")'>🧊 Įrašyti prie šaldytuvo</button> ";
+        html += "<button type='button' id='rec-mic-stop-" + String((int)person) +
+                "' onclick='stopDeviceRecording(" + String((int)person) + ")' disabled>⏹ Stop</button>";
+        html += "<br><br><span id='rec-status-" + String((int)person) + "'></span>";
         html += "</fieldset>";
     }
 
-    // Bendra JS visiems irasymo mygtukams — irasoma narsykles mikrofonu,
-    // downsample'inama i 16kHz/16bit/mono WAV (ta patį formatą, kuri
-    // Audio_PlayFile() tikisi, zr. lib/audio_output/), siunciama tiesiai
-    // kaip binarinis POST body (ne multipart/form-data — paprasciau ESP32
-    // pusei, zr. initWebServer() /admin/audio onBody).
+    // JS irasymui per irenginio ES7210 mikrofona — POST /admin/record_mic
+    // uzduoda irasyma (loop() viduje, zr. RequestMicRecording()), tada
+    // poll'inam /admin/record_status kas 300ms, kol busena taps 'done'.
+    // POST /admin/record_stop leidzia baigti anksciau (vartotojo pastaba:
+    // "1 sek sustoja, nera stop. Gal padaryti?").
     html += "<script>"
-            "let _actx,_src,_proc,_chunks,_stream;"
-            "async function startRec(p){"
-            "_chunks=[];"
-            "_stream=await navigator.mediaDevices.getUserMedia({audio:true});"
-            "_actx=new(window.AudioContext||window.webkitAudioContext)();"
-            "_src=_actx.createMediaStreamSource(_stream);"
-            "_proc=_actx.createScriptProcessor(4096,1,1);"
-            "_proc.onaudioprocess=function(e){_chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));};"
-            "_src.connect(_proc);_proc.connect(_actx.destination);"
-            "document.getElementById('rec-start-'+p).disabled=true;"
-            "document.getElementById('rec-stop-'+p).disabled=false;"
-            "document.getElementById('rec-status-'+p).textContent='Įrašoma...';"
+            "async function recordViaDevice(p){"
+            "let remaining=" + String((int)(MIC_RECORD_DURATION_MS / 1000)) + ";"
+            "document.getElementById('rec-mic-'+p).disabled=true;"
+            "document.getElementById('rec-mic-stop-'+p).disabled=false;"
+            "document.getElementById('rec-status-'+p).textContent='Kalbėk! Liko '+remaining+'s';"
+            "let countdown=setInterval(()=>{"
+            "remaining--;"
+            "if(remaining>0)document.getElementById('rec-status-'+p).textContent='Kalbėk! Liko '+remaining+'s';"
+            "},1000);"
+            "await fetch('/admin/record_mic?person='+p,{method:'POST'});"
+            "for(let tries=0;tries<60;tries++){"
+            "await new Promise(r=>setTimeout(r,300));"
+            "let r=await fetch('/admin/record_status?person='+p);"
+            "let j=await r.json();"
+            "if(j.state==='done'||j.state==='error'){"
+            "clearInterval(countdown);"
+            "document.getElementById('rec-mic-'+p).disabled=false;"
+            "document.getElementById('rec-mic-stop-'+p).disabled=true;"
+            "document.getElementById('rec-status-'+p).textContent=j.state==='done'?'Įrašyta!':'Klaida';"
+            "return;"
             "}"
-            "function stopRec(p){"
-            "_proc.disconnect();_src.disconnect();"
-            "_stream.getTracks().forEach(t=>t.stop());"
-            "let total=0;_chunks.forEach(a=>total+=a.length);"
-            "let merged=new Float32Array(total),off=0;"
-            "_chunks.forEach(a=>{merged.set(a,off);off+=a.length;});"
-            "let ratio=_actx.sampleRate/16000;"
-            "let newLen=Math.floor(merged.length/ratio);"
-            "let rs=new Float32Array(newLen);"
-            "for(let i=0;i<newLen;i++)rs[i]=merged[Math.floor(i*ratio)];"
-            "let buf=new ArrayBuffer(44+rs.length*2),v=new DataView(buf);"
-            "function ws(o,s){for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i));}"
-            "ws(0,'RIFF');v.setUint32(4,36+rs.length*2,true);ws(8,'WAVE');ws(12,'fmt ');"
-            "v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);"
-            "v.setUint32(24,16000,true);v.setUint32(28,32000,true);"
-            "v.setUint16(32,2,true);v.setUint16(34,16,true);ws(36,'data');"
-            "v.setUint32(40,rs.length*2,true);"
-            "let o=44;for(let i=0;i<rs.length;i++){let s=Math.max(-1,Math.min(1,rs[i]));"
-            "v.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;}"
-            "document.getElementById('rec-status-'+p).textContent='Siunčiama...';"
-            "fetch('/admin/audio?person='+p,{method:'POST',body:buf})"
-            ".then(r=>{document.getElementById('rec-status-'+p).textContent=r.ok?'Išsaugota!':'Klaida';})"
-            ".catch(()=>{document.getElementById('rec-status-'+p).textContent='Klaida';});"
-            "document.getElementById('rec-start-'+p).disabled=false;"
-            "document.getElementById('rec-stop-'+p).disabled=true;"
+            "}"
+            "clearInterval(countdown);"
+            "document.getElementById('rec-mic-'+p).disabled=false;"
+            "document.getElementById('rec-mic-stop-'+p).disabled=true;"
+            "document.getElementById('rec-status-'+p).textContent='Per ilgai laukta...';"
+            "}"
+            "async function stopDeviceRecording(p){"
+            "await fetch('/admin/record_stop?person='+p,{method:'POST'});"
             "}"
             "</script>";
 
     html += "</body></html>";
     return html;
 }
+
+void RequestTestSoundPlayback(int personIdx);  // apibrezta zemiau, prie loop()
+void RequestMicRecording(int personIdx);       // apibrezta zemiau, prie loop()
+void RequestMicRecordStop();                   // apibrezta zemiau, prie loop()
+const char *MicRecordGetStateStr();            // apibrezta zemiau, prie loop()
 
 void initWebServer() {
 #ifdef DEVELOPMENT_MODE
@@ -470,10 +477,11 @@ void initWebServer() {
     // DEVELOPMENT_MODE blocku.
     s_webServer.on("/testsound", HTTP_GET, [](AsyncWebServerRequest *request) {
         int personIdx = request->hasParam("person") ? request->getParam("person")->value().toInt() : 5;
-        char path[32];
-        snprintf(path, sizeof(path), "/audio_%d.wav", personIdx);
-        bool ok = Audio_PlayFile(path);
-        request->send(ok ? 200 : 500, "text/plain", ok ? "OK" : "KLAIDA");
+        // 2026-09-05: NEBEKVIEcIA Audio_PlayFile() cia tiesiogiai (as_tcp
+        // uzduoties task_wdt crash ilgesniems failams) — tik pazymi, o
+        // TIKRAS grojimas vyksta loop() viduje, zr. RequestTestSoundPlayback().
+        RequestTestSoundPlayback(personIdx);
+        request->send(200, "text/plain", "OK (grojama fone)");
     });
 #endif
 
@@ -520,6 +528,35 @@ void initWebServer() {
                 }
             }
         });
+
+    // 2026-09-05 (vartotojo pastaba: "darom is adminkes garso irasyma per
+    // esp-32 mikra") — irasymas per irenginio ES7210 mikrofona. NEBEKVIECIA
+    // Audio_RecordToFile() cia tiesiogiai (as_tcp uzduoties task_wdt crash
+    // rizika ilgesniam blokavimui, ta pati priezastis kaip /testsound) —
+    // tik pazymi, TIKRAS irasymas vyksta loop() viduje.
+    s_webServer.on("/admin/record_mic", HTTP_POST, [](AsyncWebServerRequest *request) {
+        int personIdx = request->hasParam("person") ? request->getParam("person")->value().toInt() : -1;
+        if (personIdx <= 0 || personIdx >= PERSON_COUNT) {
+            request->send(400, "text/plain", "KLAIDA: neteisingas person");
+            return;
+        }
+        RequestMicRecording(personIdx);
+        request->send(200, "text/plain", "OK (irasoma fone)");
+    });
+
+    s_webServer.on("/admin/record_status", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String json = String("{\"state\":\"") + MicRecordGetStateStr() + "\"}";
+        request->send(200, "application/json", json);
+    });
+
+    // 2026-09-05 (vartotojo pastaba: "1 sek sustoja, nera stop. Gal
+    // padaryti?") — leidzia baigti irasyma anksciau nei
+    // MIC_RECORD_DURATION_MS. Veikia net kai loop() uzimtas irasinejant,
+    // nes AsyncWebServer callback'ai vykdomi ATSKIROJE (as_tcp) uzduotyje.
+    s_webServer.on("/admin/record_stop", HTTP_POST, [](AsyncWebServerRequest *request) {
+        RequestMicRecordStop();
+        request->send(200, "text/plain", "OK");
+    });
 
     s_webServer.on("/admin/message", HTTP_POST, [](AsyncWebServerRequest *request) {
         if (request->hasParam("person", true) && request->hasParam("text", true)) {
@@ -596,10 +633,9 @@ void setup() {
     if (!LittleFS.begin(true)) {
         Serial.println("[LittleFS] KLAIDA: nepavyko inicijuoti/formatuoti.");
     }
-    // ES8311 (garsiakalbis) — TIK atkurimas, mikrofono kodekas (ES7210)
-    // nenaudojamas (irasymas vyksta narsykleje, zr. main.cpp /admin puslapio
-    // JS). Klaida cia NESUSTABDO likusios sistemos — garsas tik papildoma
-    // funkcija, ne kritinis kelias.
+    // ES8311 (garsiakalbis, atkurimas) + ES7210 (mikrofonas, irasymas per
+    // admin panele "Irasyti prie saldytuvo" mygtuka). Klaida cia NESUSTABDO
+    // likusios sistemos — garsas tik papildoma funkcija, ne kritinis kelias.
     Audio_Init();
 
     // 2026-09-05: KVIECIAMA VISADA (ne tik DEVELOPMENT_MODE) — adminke
@@ -642,7 +678,70 @@ static bool readWakeButtonEdge() {
     return edge;
 }
 
+// KLAIDA rasta 2026-09-05 — /testsound (curl diagnostika) kviete
+// Audio_PlayFile() TIESIOGIAI is AsyncWebServer callback'o, t.y. as_tcp
+// uzduoties kontekste. Ilgesniam (~16s) narsykleje irasytam failui
+// blokuojantis i2s_write ciklas neleido tai uzduociai atstatyti savo task
+// watchdog laiku -> "task_wdt... Aborting." -> irenginys persikrove.
+// Fizinis "Garsas" mygtukas (ui_screens.cpp) sios problemos NETURI, nes
+// kviecia Audio_PlayFile() is pagrindinio loop() uzduoties (be task_wdt
+// registracijos ten). FIX: /testsound tik PAZYMI norima grojima, o TIKRAS
+// Audio_PlayFile() kvietimas vyksta cia, loop() viduje.
+static volatile int s_pendingTestSoundPerson = -1;
+
+void RequestTestSoundPlayback(int personIdx) {
+    s_pendingTestSoundPerson = personIdx;
+}
+
+// 2026-09-05 (vartotojo pastaba: "darom is adminkes garso irasyma per
+// esp-32 mikra") — ta pati "atidek i loop()" schema kaip
+// RequestTestSoundPlayback virs (Audio_RecordToFile() irgi blokuoja kelias
+// sekundes, negalima kviesti is AsyncWebServer as_tcp uzduoties). Busena
+// (idle/recording/done/error) leidzia admin puslapio JS poll'inti progresa.
+enum class MicRecordState { IDLE, RECORDING, DONE, ERROR };
+static volatile MicRecordState s_micRecordState = MicRecordState::IDLE;
+static volatile int s_pendingMicRecordPerson = -1;
+
+// 2026-09-05 (vartotojo pastaba: "Veikia, 1 sek sustoja, nera stop. Gal
+// padaryti?") — leidzia adminkes "Stop" mygtukui baigti irasyma anksciau
+// nei MIC_RECORD_DURATION_MS (zr. Audio_RecordToFile() stopRequested parametra).
+static volatile bool s_micRecordStopRequested = false;
+
+void RequestMicRecording(int personIdx) {
+    s_micRecordState = MicRecordState::RECORDING;
+    s_micRecordStopRequested = false;
+    s_pendingMicRecordPerson = personIdx;
+}
+
+void RequestMicRecordStop() {
+    s_micRecordStopRequested = true;
+}
+
+const char *MicRecordGetStateStr() {
+    switch (s_micRecordState) {
+        case MicRecordState::RECORDING: return "recording";
+        case MicRecordState::DONE: return "done";
+        case MicRecordState::ERROR: return "error";
+        default: return "idle";
+    }
+}
+
 void loop() {
+    if (s_pendingTestSoundPerson >= 0) {
+        int personIdx = s_pendingTestSoundPerson;
+        s_pendingTestSoundPerson = -1;
+        char path[32];
+        snprintf(path, sizeof(path), "/audio_%d.wav", personIdx);
+        Audio_PlayFile(path);
+    }
+    if (s_pendingMicRecordPerson >= 0) {
+        int personIdx = s_pendingMicRecordPerson;
+        s_pendingMicRecordPerson = -1;
+        char path[32];
+        snprintf(path, sizeof(path), "/audio_%d.wav", personIdx);
+        bool ok = Audio_RecordToFile(path, MIC_RECORD_DURATION_MS, &s_micRecordStopRequested);
+        s_micRecordState = ok ? MicRecordState::DONE : MicRecordState::ERROR;
+    }
     // Radaras pasalintas — v1 nebeturi atskiro "judesio" jutiklio; realus
     // pazadinimo saltinis dabar — fizinis PWR mygtukas (zr. readWakeButtonEdge
     // virsuje). AppStateMachine_Update() pati ignoruoja sia reiksme, jei jau

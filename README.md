@@ -470,3 +470,37 @@ Vartotojo idėja: irasymas vyksta NARSYKLEJE (Web Audio API admin panele — TIK
 **Antra pamoka:** kai vartotojas negalejo issiaiskinti toliau, jam pateikta PILNA technine santrauka nusinesti i kita AI pokalbi (ChatGPT) — gautas TIKSLUS, patikrinamas kaltininko pasiulymas (P4 amp enable), kuris PASITVIRTINO patikrinus TIESIOGIAI oficialiame source kode (ne aklai pasitikint). **Antrinių AI pasiūlymų patikrinimas prieš patį šaltinį — pakartotas principas šiame projekte (žr. Qualcomm modelio klaidą aukščiau).**
 
 **GALUTINIS REZULTATAS: PATVIRTINTA REALIU HARDWARE** — vartotojas išgirdo testinį garsą per kolonėlę po visų penkių pataisymų.
+
+## Sesija 2026-09-05 (vakaras) — Balso žinučių įrašymas: nuo naršyklės iki paties šaldytuvo mikrofono
+
+Tęsinys po garso atkūrimo pataisymo — dabar reikėjo IŠSPRĘSTI patį įrašymą (admin panelėje veikė tik atkūrimas). Kelias buvo netiesus: keturi bandymai, kol rasta patikima, visiems vienoda architektūra.
+
+### Bandymas 1: naršyklės mikrofonas (getUserMedia) — užstrigo dėl saugaus konteksto
+
+Pirmas variantas — `navigator.mediaDevices.getUserMedia()` + `ScriptProcessorNode` admin puslapyje, siunčiant WAV per `/admin/audio` POST. Vartotojas pranešė "html puslapyje dar negaliu įrašyti" — priežastis: **naršyklės saugaus konteksto reikalavimas**. `getUserMedia()` veikia TIK per `https://` arba `localhost`, o adminkė yra paprastas `http://192.168.43.250` (LAN IP NĖRA laikomas saugiu). Windows/Chrome apeinama per `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (vartotojas įjungė, suveikė) — bet **Safari (Mac/iPhone) TOKIO APĖJIMO APSKRITAI NETURI**, tad šis kelias niekada nebūtų veikęs vaikams per Mac.
+
+Net ir suveikus (Windows), paaiškėjo antra problema — įrašytas failas buvo **visiškai tylus** (`pikas=0/32767`, 0.0%), nors visi programiniai sluoksniai (leidimas, trukmė, upload) raportavo sėkmę. Pridėta amplitudės diagnostika (`peakAbs` skaičiavimas `Audio_PlayFile()` viduje) tam patvirtinti — patikrinta Windows Privatumo nustatymuose, kad Chrome TURI mikrofono prieigą (screenshot patvirtino), tad tiksli priežastis (neteisingas įrašymo įrenginys? nutildytas mikrofonas?) liko neišaiškinta, nes projektas persiorientavo į kitą kelią.
+
+### Bandymas 2: failo formato mažinimas — 8-bit PCM, tada IMA ADPCM
+
+Pakeliui vartotojas atkreipė dėmesį, kad 16-bit PCM WAV failas (517KB / 16s) "labai daug vietos užima". Pirmas bandymas — 8-bit unsigned PCM (2x mažiau) — vartotojas teisingai pastebėjo "PCM tas pats wav, rask kitą lengvesnį formatą" (tikras suspaudimas, ne vien grubesnė kvantizacija). Įdiegtas **IMA ADPCM** (standartinis adaptyvaus delta kodavimo algoritmas, 4 bitai/samplui, ~4x suspaudimas be papildomų bibliotekų) — koderis/dekoderis parašytas nuo nulio abiejose pusėse (JS `encodeIma()` admin puslapyje, C++ `imaEncodeSample()`/`imaDecodeNibble()` `lib/audio_output/`), naudojant standartinį step/index lentelių algoritmą. MP3 apsvarstytas ir atmestas ("mp3 neina?") — reikalautų atskiros JS kodavimo bibliotekos IR tikro MP3 dekoderio ESP32 pusėje, per didelė rizika jau ir taip trapiam garso keliui.
+
+### Bandymas 3: failo įkėlimas su decodeAudioData (Mac/telefonams)
+
+Kadangi Safari negali apeiti saugaus konteksto, sekantis bandymas — vietoj gyvo įrašymo, **failo pasirinkimas**: vaikas įrašo balsą telefono/Mac diktofonu, tada pasirenka failą admin puslapyje. Dekodavimui naudotas `AudioContext.decodeAudioData()` — ŠI API NETURI saugaus-konteksto apribojimo ir veikia visose naršyklėse (native m4a/aac/mp3/wav dekodavimas be jokios papildomos bibliotekos). Pridėtas HTML `capture` atributas prie `<input type="file">` — telefonuose iš karto atidaro įrenginio įrašymo langą (vietoj failo naršymo), Mac/Windows desktop naršyklėse neturi efekto (nėra web-standartinio būdo paleisti atskirą OS programą iš puslapio).
+
+### Bandymas 4 (GALUTINIS): įrašymas per PAČIO ŠALDYTUVO mikrofoną (ES7210)
+
+Vartotojas pasiūlė: "Tada darom iš adminkės garso įrašymą per esp-32 mikrą???" — visiškai kitas požiūris: kadangi visi naršyklės keliai turėjo suderinamumo apribojimų, kodėl neįrašius per PAČIAME ĮRENGINYJE jau esantį ES7210 mikrofono kodeką (anksčiau sąmoningai nenaudotą)?
+
+**Kodeko bring-up:** `pschatzmann/arduino-audio-driver` biblioteka JAU turėjo paruoštą `AudioDriverES8311_ES7210` kombinuotą tvarkyklę (naudojamą lygiai tokios pat architektūros pavyzdinėje plokštėje `ESP32S3AISmartSpeaker.h`) — I2C adresas 0x40 (patvirtinta sutampant su oficialiu Waveshare `ES7210_CODEC_DEFAULT_ADDR`), DIN pinas GPIO13 (patvirtinta pagal anksčiau atsisiųstą Waveshare `bsp.h`, `BSP_I2S_DSIN`).
+
+**Rasta ir apeita architektūrinė kliūtis:** ES7210 mikrofonų masyvo lustas `setMicsForChannels()` palaiko TIK 2 arba 4 kanalus, niekada mono — o senas `driver/i2s.h` API turi VIENĄ bendrą `channel_format` nustatymą VISAM I2S periferijos kadrui (TX ir RX KARTU, ne atskirai). Sprendimas: `I2S_CHANNEL_FMT_RIGHT_LEFT` (2 kanalai) visada; grojant (`Audio_PlayFile`) mono samplas dubliuojamas į L+R, įrašant (`Audio_RecordToFile`) paimamas tik kairysis kanalas (MIC1).
+
+**Architektūra:** `POST /admin/record_mic?person=N` tik PAŽYMI norimą įrašymą (ta pati "atidėk į loop()" schema kaip `/testsound` — `Audio_RecordToFile()` blokuoja kelias sekundes, negalima kviesti iš AsyncWebServer `as_tcp` užduoties dėl `task_wdt` crash rizikos, jau anksčiau rastos šioje sesijoje). Tikras įrašymas vyksta `loop()` viduje, admin puslapio JS poll'ina `/admin/record_status` kas 300ms su matomu atgaliniu skaičiavimu. `POST /admin/record_stop` leidžia baigti anksčiau (vartotojo pastaba: "1 sek sustoja, nėra stop") — veikia net kai `loop()` užimtas įrašinėjant, nes AsyncWebServer callback'ai vykdomi ATSKIROJE užduotyje ir gali nustatyti `volatile bool` vėliavėlę, kurią įrašymo ciklas tikrina tarp kiekvieno I2S nuskaitymo chunk'o (~16ms granuliacija).
+
+**PATVIRTINTA REALIU HARDWARE:** įrašyta per ES7210 (pikas 1.7%, aplinkos triukšmas be kalbėjimo), atkurta atgal per ES8311+stiprintuvą — amplitudė sutapo abiejose pusėse (1.6% vs 1.7%, maža paklaida dėl ADPCM apvalinimo), patvirtinant pilną įrašymo→kodavimo→saugojimo→dekodavimo→grojimo grandinę. Realus testas su kalbėjimu — PAVYKO ("Pavyko. Bet nutraukė antrą sakinį") — trukmė padidinta 6s→12s.
+
+**Galutinis sprendimas:** vartotojas paprašė pašalinti visus tris ankstesnius (naršyklės mikrofono, failo įkėlimo) kelius admin puslapyje — liko TIK "🧊 Įrašyti prie šaldytuvo" + "⏹ Stop" mygtukai, veikiantys vienodai visiems, nepriklausomai nuo naudojamo įrenginio/naršyklės.
+
+**Pamoka ateičiai:** kai naršyklės/OS lygio apribojimai (saugus kontekstas, skirtingi codec/API palaikymai skirtingose platformose) kelis kartus stabdo tą patį sprendimą, verta apsvarstyti, ar problema apskritai turi būti sprendžiama naršyklėje — šiuo atveju jau esantis, bet nenaudotas įrenginio hardware (ES7210) pasirodė esąs žymiai patikimesnis ir paprastesnis sprendimas nei bandymas suderinti tris skirtingas naršyklių/OS elgsenas.
