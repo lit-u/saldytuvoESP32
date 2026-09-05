@@ -208,6 +208,27 @@ bool initCamera() {
         return false;
     }
 
+    // Tamsaus kambario derinimas (vartotojo pastaba 2026-09-04: "tamsu
+    // kambaryje, neatpazista mane") — numatytoji gain riba per zema, kad
+    // sensorius pilnai kompensuotu mazo apsvietimo salygas. Leidziame daugiau
+    // automatinio stiprinimo (trioksmas priimtina kaina uz tai, kad veidas
+    // apskritai butu matomas).
+    //
+    // 2026-09-05: /snapshot diagnostika parode, kad realus atvejis NE tik
+    // "visur tamsu", o KONTRAVIESA (backlighting) — kambario sviesos saltinis
+    // UZ vartotojo nugaros apgauna automatine ekspozicija (kamera taikosi i
+    // rysku fona, veidas priesais lieka juodas siluetas). AE_LEVEL i
+    // MAKSIMUMA (+2, ne +1) — priverciam sensoriu taikytis i sviesesni
+    // VIDURKI, tai pakelia ir tamsu priekini plana (veida), net jei fonas dar
+    // labiau perdega. Papildo (ne pakeicia) LCD "blykstes" sprendima (zr.
+    // app_state_machine.cpp onWakeSequenceDone) — plokstej nera atskiro
+    // kameros LED.
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (sensor) {
+        sensor->set_gainceiling(sensor, GAINCEILING_16X);
+        sensor->set_ae_level(sensor, 2);
+    }
+
     // Vienkartinis bandomasis kadras — patikrinti, kad sensorius fiziskai
     // gyvas, PRIES investuojant i veido atpazinimo integracija.
     camera_fb_t *fb = esp_camera_fb_get();
@@ -393,11 +414,28 @@ void setup() {
     //         kad ui_screens.cpp galetu atkurti PersonProfile.greetingAudioFile.
 }
 
+// Realus "pazadinimo" mygtukas (vartotojo pastaba 2026-09-05: "dabar Reset
+// nieko mums neduoda, sutvarkom, kad viskas vyktu kaip is tikruju") — TAS
+// PATS fizinis PWR_BUTTON_PIN (IO15, jau sumontuotas korpuse, zr.
+// deep_sleep.h), kuris DEVELOPMENT_MODE metu (deep sleep isjungtas) NIEKADA
+// nebuvo skaitomas awake loop() metu — nuspaudimas tiesiog nieko nedare.
+// Krastas (HIGH->LOW), ne lygis, kad ilgas laikymas nesukeltu pakartotinio
+// trigerio kas loop() iteracija.
+static bool readWakeButtonEdge() {
+    static bool s_wasPressed = false;
+    bool isPressed = (digitalRead(PWR_BUTTON_PIN) == LOW);
+    bool edge = isPressed && !s_wasPressed;
+    s_wasPressed = isPressed;
+    return edge;
+}
+
 void loop() {
-    // Radaras pasalintas — v1 nebeturi "judesio" ivesties, tik fiksuotas
-    // SCREEN_AWAKE_TIMEOUT_MS nuo pasisveikinimo pradzios (zr. WAKE ->
-    // AppStateMachine_Update(true) setup() f-joje).
-    AppStateMachine_Update(false);
+    // Radaras pasalintas — v1 nebeturi atskiro "judesio" jutiklio; realus
+    // pazadinimo saltinis dabar — fizinis PWR mygtukas (zr. readWakeButtonEdge
+    // virsuje). AppStateMachine_Update() pati ignoruoja sia reiksme, jei jau
+    // ne STANDBY busenoje (zr. app_state_machine.cpp).
+    bool wakeButtonPressed = readWakeButtonEdge();
+    AppStateMachine_Update(wakeButtonPressed);
     lv_timer_handler();
 
     // v1: kai state machine pati nusprendzia grizti i STANDBY (15s be

@@ -8,9 +8,19 @@
  *
  * Busenu diagrama (paprastas atvejis, be sudetingu pereigu):
  *
- *   STANDBY --(judesys)--> SCANNING --(atpazinta arba timeout)--> GREETING
- *      ^                                                              |
- *      +---------------------(judesio nera > timeout)-----------------+
+ *   STANDBY --(judesys)--> SCANNING --(atpazinta)--------------------> GREETING
+ *      ^                      |                                          |
+ *      |                      +--(NEatpazinta)--> PICKING --(paspaude)----+
+ *      |                                             |     (viesas profilis,
+ *      |                                             |      ta pati GREETING
+ *      |                          (niekas nepaspaude,|      busena/timeout)
+ *      |                           timeout)          |
+ *      +---------------------(judesio nera > timeout)+--------------------+
+ *
+ * PICKING (2026-09-05, vartotojo pastaba): jei kamera NEpazino veido,
+ * vietoj tiesiog "Nepazinau" -> miegoti, ekranas linksmai paspeja keleta
+ * vardu, tada parodo 5 mygtukus (visi seimos nariai) — bet kas gali
+ * paspausti SAVO varda ir pamatyti VIESA (ne privatu) savo profilio ekrana.
  */
 #pragma once
 #include <Arduino.h>
@@ -19,7 +29,8 @@
 enum AppState {
     APP_STATE_STANDBY,   // 1. Budejimo rezimas — ekranas isjungtas
     APP_STATE_SCANNING,  // 2-3. Judesys aptiktas, laukiama veido atpazinimo
-    APP_STATE_GREETING,  // 4. Personalizuotas ekranas rodomas
+    APP_STATE_PICKING,   // 3b. NEpazino — laukiama, kol vartotojas pats paspaus savo varda
+    APP_STATE_GREETING,  // 4. Personalizuotas (arba viesas, po PICKING) ekranas rodomas
 };
 
 void AppStateMachine_Init();

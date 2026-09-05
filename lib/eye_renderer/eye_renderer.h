@@ -37,3 +37,44 @@ void EyeRenderer_SetState(EyeState state);
 // Vienkartinis greitas mirksejimas (uzmerkia-atmerkia), negriaunant
 // dabartines busenos — kviesti periodiskai is loop() IDLE metu "gyvumui".
 void EyeRenderer_Blink();
+
+/*
+ * TIMELINE/SEQUENCER (2026-09-04) — vietoj to, kad kiekviena efekta
+ * programuotume atskirai (kaip iki siol), scenarijus aprasomas kaip
+ * duomenu masyvas (EyeStep[]), o sitas varikliukas ji tiesiog vykdo.
+ * Idejos autorius — vartotojo pokalbis su ChatGPT 2026-09-04: "mes
+ * programuojame atskirus efektus, o ne turime is anksto nupiesta rezisura".
+ *
+ * Kiekvienas EyeStep — viena "poza" (zvilgsnio kryptis ARBA mirksejimas) +
+ * kiek laiko ja laikyti pries pereinant prie kito zingsnio.
+ */
+typedef struct {
+    int8_t gazeXPct;       // -100..100 (kaire..desine), 0=centras. Ignoruojama, jei blink=true.
+    int8_t gazeYPct;       // -100..100 (virsus..apacia), 0=centras.
+    bool blink;            // jei true — sis zingsnis yra greitas mirksejimas (gaze* ignoruojami).
+    uint16_t transitionMs; // per kiek laiko zvilgsnis pasiekia sia poza (anim trukme).
+    uint16_t holdMs;       // kiek laukti PRIES pereinant i kita zingsni (visa zingsnio trukme).
+} EyeStep;
+
+// Choreografuota "pabudimo" seka (~2.3s, zr. eye_renderer.cpp konkrecius
+// zingsnius) — zvilgsnis i sonus + zvilgsnis aukstyn + mirksejimas + grizimas
+// i centra. Pakeicia buvusi "tuscia" laukima pries fotografuojant (vartotojo
+// pastaba 2026-09-04: "fotografuoja per greitai... reikia pauzes ir kazkokio
+// zenklo animacijos"). Kviesti KARTA, kai prasideda SCANNING. `onComplete`
+// iskvieciamas, kai seka baigiasi — cia tinkamas momentas pradeti tikra
+// fotografavima/atpazinima.
+void EyeRenderer_PlayWakeSequence(void (*onComplete)());
+
+// Besikartojanti "gyva" poza (zvilgsnis i sonus/aukstyn + mirksejimas,
+// begalinis ciklas) — pakeicia buvusi vien periodini mirksejima per
+// atpazinimo HTTP laukima (vartotojo pastaba 2026-09-04: "jei tuo metu
+// skanuojamas veidas, tada turi begti taskeliai"). Kviesti KARTA, kai
+// prasideda laukimas (FaceRecognition_IdentifyAsync); sustabdyti su
+// EyeRenderer_StopSequence(), kai atsakymas gautas (nesvarbu, koks).
+void EyeRenderer_PlayRecognizingLoop();
+
+// Nutraukia siuo metu vykstancia seka (jei yra) IR grazina zvilgsni i centra
+// be animacijos. Saugu kviesti visada, net jei jokia seka nevyksta.
+void EyeRenderer_StopSequence();
+
+bool EyeRenderer_IsSequencePlaying();

@@ -15,6 +15,12 @@
  *   P1  -> LCD (ST7796) RESET
  *   P3  -> Kameros (OV5640) PWDN — patikrinta pagal "PIN OUT" lentele
  *          schemoje (EXIO3 -> CAM_PWDN). PWDN=0 -> kamera aktyvi.
+ *   P6  -> Waveshare BSP komentuoja sia kaip raudona LED (bsp.h,
+ *          "BSP_LED_RED = IO_EXPANDER_PIN_NUM_6"), BET fiziskai isbandyta
+ *          2026-09-05 IR NEUZSIDEGA siame irenginyje (galimai nesulituota
+ *          si konkreti versija, arba korpusas ja pilnai dengia) — "veikia"
+ *          indikatoriui naudojamas VIRTUALUS raudonas taskas EKRANE
+ *          (zr. ui_screens.cpp createStatusDot), NE si pin'as.
  *   PWM registro reiksme (0-100) -> LCD BACKLIGHT skaistis
  *   ADC registras -> baterijos itampa (BAT_ADC)
  */

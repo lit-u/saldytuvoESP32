@@ -399,3 +399,38 @@ Patikrinus `/snapshot` endpoint'a (rodo, ka kamera REALIAI fiksuoja) rasta, kad 
 - `EyeRenderer` WAKE/GOODBYE busenu ir periodinio IDLE mirksejimo (STANDBY metu) panaudojimas — deklaruota, bet dar niekur nekvieciama.
 - Windows Core Isolation grazinimas atgal (~2026-09-11, jau suplanuotas priminimas).
 - SD kortele lieka neveikianti (nenaudojama, nesvarbu — zr. anksciau siame README).
+
+## Sesija 2026-09-04/05 — Timeline sequencer, realus mygtukas, "Kas tu?" meniu, lietuviski sriftai
+
+### Akiu "timeline/sequencer" architektura (ChatGPT idejos pagrindu)
+
+Vartotojo pastaba: iki siol kiekvienas efektas (mirksejimas, zvilgsnis) buvo programuojamas atskirai — trukstant bendros "rezisuros". Sprendimas: `eye_renderer.cpp` gavo generini `EyeStep[]` duomenu masyva + varikliuka (`lv_timer` grandine), o scenarijus (WAKE seka pries fotografuojant, RECOGNIZING besikartojanti "gyva" poza per HTTP laukima) aprasomi kaip DUOMENYS (zvilgsnio kryptis/mirksejimas/trukme), ne kodas. Pridetas ir "pupil" (zvilgsnio taskas) — mazas balta apskritimas KIEKVIENOS akies VIDUJE (LVGL vaikas), automatiskai apsikerpantis, kai akis uzmerkta.
+
+**Rasta kritine LVGL klaida sioje architekturoje:** `lv_obj_set_style_transform_rotation()` ant DIDESNIO (>~50x50px) objekto (200x60 "Kas tu?" mygtuko) UZSTRIGDAVO irenginį VISIEM LAIKAM — nei Serial isvedimo, nei crash dump'o, tik fizinis USB atjungimas padeda. Pasitvirtino IR su animacija, IR be jos (vien statinis kampas). Diagnostika (Serial zymes) parode, kad pats kodas baigiasi sekmingai — strigimas ivyksta VELIAU, `lv_timer_handler()` metu, kai LVGL bando FAKTISKAI nupiesti pasukta objekta (greiciausiai reikalingas "layer" buferis virsija sio projekto LVGL atminties pool'a). **ISVADA: NE naudoti `transform_rotation` dideliems objektams sitame projekte** — mazoms formoms (antakiai, 46x8) veikia puikiai.
+
+### Tamsaus kambario ir kontraviesos fiksavimas
+
+`/snapshot` diagnostika parode DVI atskiras problemas: (a) tiesiog tamsu — sprendziama `sensor->set_gainceiling(GAINCEILING_16X)` + `set_ae_level(2)` (main.cpp); (b) KONTRAVIESA (sviesos saltinis UZ vartotojo nugaros apgauna automatine ekspozicija, veidas lieka juodas siluetas) — cia gain/AE riboto poveikio, geriausias sprendimas fiziskai nestoveti pries sviesos saltini. Pridetas LCD "blykstes" mechanizmas (`UI_ShowCameraFlashOn/Off` — baltas viso ekrano overlay TIESIOG pries fotografuojant, ~0.6s), nes plokstej NERA atskiro kameros LED.
+
+### Realus fizinis pazadinimo mygtukas
+
+`PWR_BUTTON_PIN` (IO15, jau sumontuotas korpuse deep_sleep.h tikslams) NEBUVO skaitomas `loop()` metu, kol `DEVELOPMENT_MODE` isjungia tikra deep sleep (COM prievado konfliktas su flash'inimu) — paspaudimas tyliai nieko nedarydavo. Sprendimas: `readWakeButtonEdge()` (main.cpp) skaito TA PATI fizini mygtuka TIESIOGIAI awake `loop()` metu (krastu, ne lygiu, apsauga nuo pakartotinio trigerio). Papildomai: PWR mygtukas dabar veikia KAIP ISJUNGEJAS bet kuriuo metu (SCANNING/PICKING/GREETING) — paspaudus, TIESIOGIAI grystama i STANDBY, nelaukiant jokio proceso pabaigos.
+
+**Rasta ir pataisyta rimta klaida:** `FACE_SCAN_SAFETY_TIMEOUT_MS` buvo skaiciuojamas nuo NETEISINGO momento (WAKE sekos pradzios, ne tikro HTTP kvietimo pradzios) — realus buferis virs vidinio 40s HTTP timeout'o buvo TIK ~2s, todel saugumo riba galejo suveikti PRIES pacio HTTPClient timeout'a IR palikti FreeRTOS task'a "pakibusi" fone (sekantis mygtuko paspaudimas galejo tyliai nieko nedaryti). Pataisyta: matuojama nuo `s_recognizeStartMs`, riba pakelta i 50s (tikras 10s buferis virs 40s).
+
+### "Veikia" indikatorius — fizine LED atmesta, virtualus taskas ekrane
+
+Bandyta P6 (CH32V003 EXIO, pagal Waveshare BSP komentara) kaip raudona statuso LED — REALIAME hardware NEUZSISDEGA (galimai nesulituota si versija). Pakeista virtualiu raudonu tasku ekrano virsuje desineje (visada matomas per korpuso langa) — rodomas visuose "pabudusiuose" ekranuose.
+
+### "Kiekvienam veiksmui uzrasas" + "Kas tu?" meniu (kai kamera NEpazysta)
+
+Vietoj tiesiog "Nepazinau" -> miegoti: (1) dinamiskas busenos tekstas kiekvienai SCANNING fazei ("Ruosiuosi..." / "Fotografuojama..." / "Atpazistama... (Xs)" sekundziu skaitliukas), (2) linksmas spejimas ("Gal Saulius?" ir t.t.), (3) 5 lieciami mygtukai (visi seimos nariai — realus vardai, ne "sunus"/"zmona"), leidziantys BET KAM pasirinkti save ir pamatyti VIESA (ne privatu) profilio ekrana be asmenines FamilyMessages zinutes. Universalus apvalus "M" mygtukas (virsuje kaireje) VISUOSE pabudusiuose ekranuose iskart soka i si meniu is bet kurios busenos.
+
+### Lietuviski sriftai — rasta TIKRA priezastis ir pataisyta
+
+LVGL numatytieji `lv_font_montserrat_*` sriftai apima tik Basic Latin + Latin-1 — Lietuviskos raides (Latin Extended-A) NETURI, todel visas tekstas anksciau buvo be diakritiku. Pirmas bandymas su `lv_font_conv` sugeneruotais sriftais NEVEIKE ("visai nesimato raidziu") — priezastis rasta per LVGL GitHub issue #8480 (identiskas simptomas): `lv_conf.h` turi `LV_USE_FONT_COMPRESSED 0`, kas VISISKAI isjungia suglaudintu (RLE) sriftu dekodavima, o `lv_font_conv` PAGAL NUTYLEJIMA generuoja suglaudinta formata. **Pataisymas:** generuoti su `--no-compress --no-prefilter` (zr. `lib/lv_fonts_lt/lv_fonts_lt.h` komentara su pilna regeneravimo komanda). Saltinis — Windows `segoeui.ttf` (Montserrat TTF sioje masinoje nebuvo). Papildomai pridetas atskiras `vocativeName` laukas `PersonProfile` (kreipiniui — "Sveikas, Sauliau", ne "Sveikas, Saulius") ir sriftu dydziai sumazinti ~10% visur.
+
+### Neatlikta / sekantis kartas
+
+- Vizualus "kiek telpa" teksto testo (visi komplimentai vienu metu Adult/Child/Public ekranuose) rezultatu peržiūra ir suredagavimas i realu turini.
+- **Admin panele per WiFi** — planuojama: (a) paprasta HTML forma tevams vietiniame tinkle (dienos zinutes/komplimentai), (b) platesne adminke savininkui (AE/gain, timeout'ai, tekstai) — viskas saugoma ESP32 Preferences/NVS, be USB flash'inimo.
