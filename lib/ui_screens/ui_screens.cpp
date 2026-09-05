@@ -75,11 +75,26 @@ static void createMenuButton(lv_obj_t *parent) {
 // zr. main.cpp /admin/audio). Audio_PlayFile() yra BLOKUOJANTIS (trunka tiek,
 // kiek irasas) — priimtina trumpam (keliu sekundziu) balso pranesimui, ta
 // pati logika kaip CAMERA_FLASH_MS kitur siame projekte.
+// 2026-09-05 (vartotojo pastaba: "paspaudus nieko nesigirdi, o ir nesuprasi
+// ar pasispaudė, tegu bent spalva pakeicia") — mygtukas dabar AISKIAI
+// parodo, kad paspaudimas UZREGISTRUOTAS: tekstas pasikeicia i "Grojama...",
+// fonas pabalsta, priverstinai nupiesama (lv_timer_handler()) PRIES
+// blokuojanti Audio_PlayFile() kvietima, tada grazinama i pradine busena.
 static void soundButtonEventCb(lv_event_t *e) {
     RecognizedPerson person = (RecognizedPerson)(intptr_t)lv_event_get_user_data(e);
+    lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
+    lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+
+    lv_label_set_text(lbl, LV_SYMBOL_AUDIO " Grojama...");
+    lv_obj_set_style_bg_color(btn, lv_color_white(), 0);
+    lv_timer_handler();  // priverstinis piesimas PRIES blokuojanti groja
+
     char path[32];
     snprintf(path, sizeof(path), "/audio_%d.wav", (int)person);
     Audio_PlayFile(path);
+
+    lv_label_set_text(lbl, LV_SYMBOL_AUDIO " Garsas");
+    lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_ORANGE), 0);
 }
 
 static void createSoundButtonIfAvailable(lv_obj_t *parent, RecognizedPerson person) {
@@ -91,6 +106,7 @@ static void createSoundButtonIfAvailable(lv_obj_t *parent, RecognizedPerson pers
     lv_obj_set_size(btn, 120, 48);
     lv_obj_set_style_radius(btn, 24, 0);
     lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_ORANGE), 0);
+    lv_obj_set_style_bg_color(btn, lv_color_white(), LV_STATE_PRESSED);  // tuojautinis lietimo atsakas
     lv_obj_align(btn, LV_ALIGN_BOTTOM_MID, 0, -14);
     lv_obj_add_event_cb(btn, soundButtonEventCb, LV_EVENT_CLICKED, (void *)(intptr_t)person);
     lv_obj_t *lbl = lv_label_create(btn);
