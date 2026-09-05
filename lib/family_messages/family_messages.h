@@ -1,23 +1,27 @@
 /*
- * Seimos zinuciu "pastdezute" — paprasta atmintyje laikoma busena.
+ * Seimos zinuciu "pastdezute" — NVS-persistuojama busena (Preferences).
  *
- * Numatyta naudoti taip:
- *   - Busimas web serveris (ESPAsyncWebServer POST /api/message) kvies
- *     FamilyMessages_Set(target, text) kai sunus/zmona parasys zinute
- *     is telefono.
- *   - Suaugusiuju sveikinimo ekranas (ui_screens) kvies
- *     FamilyMessages_Get(person) ir, jei yra zinute, parodys ja ekrane.
- *   - Kai zinute parodyta (arba po tam tikro laiko), galima iskviesti
- *     FamilyMessages_Clear(person).
+ * 2026-09-05 (vartotojo pastaba: "galime padaryti slapta skyriu, kuri matys
+ * tiktai tas, kuri atpazins... reikia lenteleje dar vieno stulpelio") —
+ * DVI atskiros zinutes kiekvienam zmogui:
+ *   - PUBLIC: rodoma VISADA, net kai zmogus save pasirenka is "Kas tu?"
+ *     meniu (UI_ShowPublicGreeting) — bet kas gali pamatyti.
+ *   - PRIVATE: rodoma TIK kai kamera TIKRAI atpazista ta zmogu
+ *     (UI_ShowAdultGreeting/UI_ShowChildGreeting) — niekada per viesa
+ *     pasirinkima, nes tada nera jokio patvirtinimo, kad tai TIKRAI tas
+ *     zmogus prie ekrano.
  *
- * TODO: siuo metu zinutes NEISSAUGOMOS i SD/flash — power-loss metu
- * dings. Jei reikes islaikyti tarp perkrovimu, perkelti i SD faila
- * arba NVS (Preferences biblioteka).
+ * Naudojimas:
+ *   - Admin panele (main.cpp POST /admin/message, "kind" parametras)
+ *     kvies FamilyMessages_Set(target, kind, text).
+ *   - Sveikinimo ekranai (ui_screens) kvies FamilyMessages_Get(person, kind).
  */
 #pragma once
 #include "family_profiles.h"
 
 #define FAMILY_MESSAGE_MAX_LEN 128
+
+enum class MessageKind { PUBLIC, PRIVATE };
 
 struct FamilyMessage {
     bool hasMessage;
@@ -26,6 +30,6 @@ struct FamilyMessage {
 };
 
 void FamilyMessages_Init();
-void FamilyMessages_Set(RecognizedPerson target, const char *text);
-const FamilyMessage &FamilyMessages_Get(RecognizedPerson target);
-void FamilyMessages_Clear(RecognizedPerson target);
+void FamilyMessages_Set(RecognizedPerson target, MessageKind kind, const char *text);
+const FamilyMessage &FamilyMessages_Get(RecognizedPerson target, MessageKind kind);
+void FamilyMessages_Clear(RecognizedPerson target, MessageKind kind);

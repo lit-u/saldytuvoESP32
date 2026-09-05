@@ -264,7 +264,19 @@ void UI_ShowChildGreeting(const PersonProfile &p) {
 
     // "Kiek telpa" testas (2026-09-05) PASALINTAS — dengdavo/stumdavo realu
     // turini kituose ekranuose (zr. UI_ShowAdultGreeting pastaba). Vaiku
-    // ekranas lieka paprastas: vardas + akys, be papildomo teksto.
+    // ekranas lieka paprastas: vardas + akys, PLIUS slapta zinute (jei yra),
+    // zr. UI_ShowAdultGreeting pastaba del PUBLIC/PRIVATE atskyrimo.
+    const FamilyMessage &childMsg = FamilyMessages_Get(p.id, MessageKind::PRIVATE);
+    if (childMsg.hasMessage) {
+        lv_obj_t *childContent = lv_label_create(s_scrChild);
+        lv_label_set_long_mode(childContent, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(childContent, LV_PCT(85));
+        lv_obj_set_style_text_align(childContent, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(childContent, childMsg.text);
+        lv_obj_set_style_text_font(childContent, &lv_font_lt_20, 0);
+        lv_obj_set_style_text_color(childContent, lv_color_white(), 0);
+        lv_obj_align(childContent, LV_ALIGN_CENTER, 0, 120);
+    }
     createSoundButtonIfAvailable(s_scrChild, p.id);
     createMenuButton(s_scrChild);
 
@@ -298,7 +310,12 @@ void UI_ShowAdultGreeting(const PersonProfile &p) {
     // TIKRAI zinutei is FamilyMessages (admin panele irasyta) — jei jos
     // nera, rodomas TIK VIENAS atsitiktinis komplimentas (grizta prie
     // pradinio v1 elgesio), NE visi keturi vienu metu.
-    const FamilyMessage &msg = FamilyMessages_Get(p.id);
+    //
+    // 2026-09-05 (vartotojo pastaba: "galime padaryti slapta skyriu, kuri
+    // matys tiktai tas, kuri atpazins") — TIK CIA (tikras kameros
+    // atpazinimas), naudojama PRIVATE zinute, NE PUBLIC — zr.
+    // UI_ShowPublicGreeting, kuri tycia naudoja kita (PUBLIC) reiksme.
+    const FamilyMessage &msg = FamilyMessages_Get(p.id, MessageKind::PRIVATE);
     lv_obj_t *contentBox = lv_label_create(s_scrAdult);
     lv_label_set_long_mode(contentBox, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(contentBox, LV_PCT(85));
@@ -324,12 +341,12 @@ void UI_ShowNamePicker(void (*onPersonSelected)(RecognizedPerson)) {
     lv_screen_load_anim(s_scrPicker, LV_SCR_LOAD_ANIM_FADE_IN, 200, 0, false);
 }
 
-// VIESAS profilis — TYCIA be FamilyMessages_Get() (privati zinute lieka TIK
-// tikram kameros atpazinimui, zr. UI_ShowAdultGreeting). Struktura panasi i
-// Adult greeting, bet paprastesne ir be jokios uzuominos, kad "dezute tave
-// atpazino" — cia vartotojas PATS pasakė, kas jis yra. "Meniu" mygtukas
-// (vartotojo pastaba 2026-09-05) grazina i "Kas tu?" sarasa — TAS PATS
-// universalus mygtukas kaip visuose kituose ekranuose, ne atskiras "atgal".
+// VIESAS profilis — naudoja TIK PUBLIC zinute (NIEKADA PRIVATE — privati
+// zinute lieka TIK tikram kameros atpazinimui, zr. UI_ShowAdultGreeting),
+// nes cia vartotojas PATS pasake, kas jis yra — nera jokio patvirtinimo,
+// kad tai TIKRAI tas zmogus. "Meniu" mygtukas (vartotojo pastaba
+// 2026-09-05) grazina i "Kas tu?" sarasa — TAS PATS universalus mygtukas
+// kaip visuose kituose ekranuose, ne atskiras "atgal".
 void UI_ShowPublicGreeting(const PersonProfile &p) {
     EyeRenderer_MoveToParent(s_scrStandby);  // "gelbejimas" pries clean()
     lv_obj_clean(s_scrPublic);
@@ -345,9 +362,20 @@ void UI_ShowPublicGreeting(const PersonProfile &p) {
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
     lv_obj_align(greeting, LV_ALIGN_CENTER, 0, 50);
 
-    // "Kiek telpa" testas (2026-09-05) PASALINTAS — zr. UI_ShowAdultGreeting
-    // pastaba (dengdavo/stumdavo realu turini). Viesas profilis lieka
-    // paprastas: TIK vardas, be jokios asmenines/privacios zinutes.
+    // 2026-09-05 (vartotojo pastaba: "reikia lenteleje dar vieno stulpelio
+    // - labai asmeninems zinutems") — PUBLIC zinute (jei yra) rodoma cia,
+    // nes ja mato BET KAS, kas pasirenka si varda — niekada PRIVATE.
+    const FamilyMessage &pubMsg = FamilyMessages_Get(p.id, MessageKind::PUBLIC);
+    if (pubMsg.hasMessage) {
+        lv_obj_t *pubContent = lv_label_create(s_scrPublic);
+        lv_label_set_long_mode(pubContent, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(pubContent, LV_PCT(85));
+        lv_obj_set_style_text_align(pubContent, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(pubContent, pubMsg.text);
+        lv_obj_set_style_text_font(pubContent, &lv_font_lt_20, 0);
+        lv_obj_set_style_text_color(pubContent, lv_color_white(), 0);
+        lv_obj_align(pubContent, LV_ALIGN_CENTER, 0, 120);
+    }
     // Sukurtas PASKUTINIS — lieka VIRSUJE z-tvarkoje, visada paspaudziamas.
     createSoundButtonIfAvailable(s_scrPublic, p.id);
     createMenuButton(s_scrPublic);

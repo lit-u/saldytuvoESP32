@@ -25,6 +25,7 @@
 #include <lvgl.h>
 
 #include <LittleFS.h>
+#include <Update.h>
 
 #include "io_extension.h"
 #include "lcd_st7796.h"
@@ -347,38 +348,106 @@ static String escapeHtml(const String &s) {
     return out;
 }
 
+// 2026-09-05 (vartotojo pastaba: "dar pagalvokime del adminkes dizaino")
+// — akcentine spalva kiekvienam zmogui (vien tik admin puslapio CSS,
+// NESUSIJE su LVGL p.themeAccent — tas yra lv_color_t, cia paprasciau
+// turėti atskira, tiesiog hex, paletę web puslapiui).
+static const char *ADMIN_ACCENT_COLORS[PERSON_COUNT] = {
+    "#7f8c8d",  // PERSON_UNKNOWN — nenaudojama (ciklas prasideda nuo 1)
+    "#e67e22",  // GRANDDAUGHTER_1
+    "#16a085",  // GRANDDAUGHTER_2
+    "#2980b9",  // SON
+    "#c0392b",  // WIFE
+    "#8e44ad",  // SELF
+};
+
 static String buildAdminPage() {
     String html;
-    html.reserve(2048);
+    html.reserve(4096);
     html += "<!DOCTYPE html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             "<title>Saldytuvo adminke</title>"
-            "<style>body{font-family:sans-serif;max-width:480px;margin:20px auto;"
-            "padding:0 16px;background:#f5f5f5;}"
-            "h2{color:#2C3E50;}"
-            "fieldset{margin-bottom:20px;border-radius:10px;border:1px solid #ccc;"
-            "background:#fff;padding:14px;}"
-            "legend{font-weight:bold;padding:0 6px;}"
-            "textarea{width:100%;box-sizing:border-box;font-size:16px;font-family:inherit;"
-            "border-radius:6px;border:1px solid #ccc;padding:8px;}"
-            "button{padding:10px 20px;font-size:16px;border:none;border-radius:6px;"
+            "<style>"
+            "*{box-sizing:border-box;}"
+            "body{font-family:-apple-system,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;"
+            "padding:12px;background:#eef1f4;color:#222;}"
+            "header{display:flex;align-items:center;gap:10px;margin-bottom:12px;}"
+            ".eyes{width:56px;height:30px;position:relative;flex-shrink:0;}"
+            ".brow{width:20px;height:4px;background:#2C3E50;border-radius:2px;position:absolute;top:0;}"
+            ".brow.l{left:1px;transform:rotate(-10deg);}"
+            ".brow.r{right:1px;transform:rotate(10deg);}"
+            ".eye{width:20px;height:20px;background:#2C3E50;border-radius:50%;position:absolute;"
+            "top:9px;animation:blink 4s infinite;}"
+            ".eye.l{left:1px;}"
+            ".eye.r{right:1px;}"
+            "@keyframes blink{0%,90%,100%{transform:scaleY(1);}95%{transform:scaleY(0.12);}}"
+            "h1{font-size:18px;margin:0;color:#2C3E50;}"
+            ".tabs{display:flex;gap:4px;margin-bottom:10px;}"
+            ".tab{flex:1;text-align:center;padding:9px 4px;border-radius:9px 9px 0 0;"
+            "background:#dde3e9;color:#7a8593;font-weight:600;cursor:pointer;font-size:14px;"
+            "user-select:none;}"
+            ".tab.active{background:#fff;color:#2C3E50;}"
+            ".tab.disabled{cursor:default;opacity:.55;}"
+            ".panel{display:none;}"
+            ".panel.active{display:block;}"
+            ".card{background:#fff;border-radius:10px;padding:12px 14px;margin-bottom:10px;"
+            "border-left-width:5px;border-left-style:solid;"
+            "box-shadow:0 1px 2px rgba(0,0,0,.06);}"
+            ".card h3{margin:0 0 6px;font-size:15px;}"
+            ".card label{font-size:11px;color:#8a8a8a;display:block;margin:7px 0 2px;"
+            "text-transform:uppercase;letter-spacing:.03em;}"
+            "textarea{width:100%;font-size:14px;font-family:inherit;border-radius:6px;"
+            "border:1px solid #d5d9dd;padding:6px 8px;resize:vertical;}"
+            "button{padding:7px 12px;font-size:13px;border:none;border-radius:7px;"
             "background:#2C3E50;color:#fff;cursor:pointer;}"
-            "button:active{background:#1a2530;}</style></head><body>"
-            "<h2>Šeimos žinutės</h2>"
-            "<p>Parašyk žinutę, kurią pamatys tas žmogus, kai dėžutė jį atpažins "
-            "(arba pats save pasirinks meniu).</p>";
+            "button:disabled{opacity:.4;cursor:default;}"
+            "button.save{margin-top:5px;}"
+            ".status{font-size:12px;color:#666;margin-left:6px;}"
+            ".placeholder{color:#9aa4ad;text-align:center;padding:50px 10px;font-size:14px;}"
+            "</style></head><body>"
+            "<header>"
+            "<div class='eyes'><div class='brow l'></div><div class='brow r'></div>"
+            "<div class='eye l'></div><div class='eye r'></div></div>"
+            "<h1>Šaldytuvo terminalas</h1>"
+            "</header>"
+            "<div class='tabs'>"
+            "<div class='tab active' id='tab-fridge' onclick=\"showTab('fridge')\">🧊 Šaldytuvas</div>"
+            "<div class='tab disabled' id='tab-home'>🏠 Namai</div>"
+            "</div>"
+            "<div class='panel active' id='panel-fridge'>";
 
     for (int i = 1; i < PERSON_COUNT; i++) {
         RecognizedPerson person = (RecognizedPerson)i;
         const PersonProfile &p = FamilyProfiles_Get(person);
-        const FamilyMessage &msg = FamilyMessages_Get(person);
+        const FamilyMessage &pubMsg = FamilyMessages_Get(person, MessageKind::PUBLIC);
+        const FamilyMessage &privMsg = FamilyMessages_Get(person, MessageKind::PRIVATE);
+        const char *accent = ADMIN_ACCENT_COLORS[i];
+        String pid = String((int)person);
+
+        html += "<div class='card' style='border-left-color:" + String(accent) + "'>";
+        html += "<h3 style='color:" + String(accent) + "'>" + escapeHtml(String(p.publicName)) + "</h3>";
+
         html += "<form method='POST' action='/admin/message'>";
-        html += "<fieldset><legend>" + escapeHtml(String(p.publicName)) + "</legend>";
-        html += "<input type='hidden' name='person' value='" + String((int)person) + "'>";
-        html += "<textarea name='text' rows='3' placeholder='Žinutės nėra'>";
-        if (msg.hasMessage) html += escapeHtml(String(msg.text));
-        html += "</textarea><br><br>";
-        html += "<button type='submit'>Išsaugoti</button></fieldset>";
+        html += "<input type='hidden' name='person' value='" + pid + "'>";
+        html += "<input type='hidden' name='kind' value='public'>";
+        html += "<label>Vieša žinutė (mato visi, kas pasirenka šį vardą)</label>";
+        html += "<textarea name='text' rows='2' placeholder='Nėra'>";
+        if (pubMsg.hasMessage) html += escapeHtml(String(pubMsg.text));
+        html += "</textarea>";
+        html += "<button class='save' type='submit'>Išsaugoti</button>";
+        html += "</form>";
+
+        // 2026-09-05 (vartotojo pastaba: "galime padaryti slapta skyriu,
+        // kuri matys tiktai tas, kuri atpazins... reikia lenteleje dar
+        // vieno stulpelio - labai asmeninems zinutems").
+        html += "<form method='POST' action='/admin/message'>";
+        html += "<input type='hidden' name='person' value='" + pid + "'>";
+        html += "<input type='hidden' name='kind' value='private'>";
+        html += "<label>🔒 Slapta žinutė (tik kai kamera TIKRAI atpažins)</label>";
+        html += "<textarea name='text' rows='2' placeholder='Nėra'>";
+        if (privMsg.hasMessage) html += escapeHtml(String(privMsg.text));
+        html += "</textarea>";
+        html += "<button class='save' type='submit'>Išsaugoti</button>";
         html += "</form>";
 
         // Balso žinutė — 2026-09-05: keliauta per keleta variantu (narsykles
@@ -386,18 +455,25 @@ static String buildAdminPage() {
         // bet visi turejo naršykles/OS suderinamumo apribojimu (Safari
         // nera apejimo http:// atveju). GALUTINIS sprendimas (vartotojo
         // pastaba: "super, bet isimk ir windows ir Mac ir failo pasirinkima")
-        // — TIK irasymas TIESIOGIAI per irenginio ES7210 mikrofona, paprasta
-        // ir veikia visiems vienodai (reikia stoveti prie saldytuvo).
-        html += "<fieldset><legend>" + escapeHtml(String(p.publicName)) + " — balso žinutė</legend>";
-        html += "<p style='font-size:14px;color:#555;margin-top:0;'>Paspausk ir kalbek prie šaldytuvo "
-                "(" + String((int)(MIC_RECORD_DURATION_MS / 1000)) + "s):</p>";
-        html += "<button type='button' id='rec-mic-" + String((int)person) +
-                "' onclick='recordViaDevice(" + String((int)person) + ")'>🧊 Įrašyti prie šaldytuvo</button> ";
-        html += "<button type='button' id='rec-mic-stop-" + String((int)person) +
-                "' onclick='stopDeviceRecording(" + String((int)person) + ")' disabled>⏹ Stop</button>";
-        html += "<br><br><span id='rec-status-" + String((int)person) + "'></span>";
-        html += "</fieldset>";
+        // — TIK irasymas TIESIOGIAI per irenginio ES7210 mikrofona.
+        html += "<label>Balso žinutė (" + String((int)(MIC_RECORD_DURATION_MS / 1000)) + "s prie šaldytuvo)</label>";
+        html += "<button type='button' id='rec-mic-" + pid +
+                "' onclick='recordViaDevice(" + pid + ")'>🎤 Įrašyti</button> ";
+        html += "<button type='button' id='rec-mic-stop-" + pid +
+                "' onclick='stopDeviceRecording(" + pid + ")' disabled>⏹ Stop</button>";
+        html += "<span id='rec-status-" + pid + "' class='status'></span>";
+        html += "</div>";
     }
+
+    html += "</div>"  // #panel-fridge
+            "<div class='panel' id='panel-home'>"
+            "<p class='placeholder'>Netrukus — viso buto įrenginių valdymas.</p>"
+            "</div>"
+            // 2026-09-05 (vartotojo pastaba: "man reikia kitos [adminkes]")
+            // — nedidele, neiskyla nuoroda i savininko puslapi (slaptazodis
+            // ten, ne cia).
+            "<p style='text-align:center;margin-top:16px;'>"
+            "<a href='/admin/owner' style='color:#aaa;font-size:12px;'>🔧 Savininkui</a></p>";
 
     // JS irasymui per irenginio ES7210 mikrofona — POST /admin/record_mic
     // uzduoda irasyma (loop() viduje, zr. RequestMicRecording()), tada
@@ -405,6 +481,13 @@ static String buildAdminPage() {
     // POST /admin/record_stop leidzia baigti anksciau (vartotojo pastaba:
     // "1 sek sustoja, nera stop. Gal padaryti?").
     html += "<script>"
+            // 2026-09-05 (vartotojo pastaba: "reikia dar vieno tab - Namai,
+            // kol kas tuscia, ar neaktyvu") — "Namai" tab'as saMoningai
+            // neaktyvus (nera onclick), kol nera ka jame rodyti.
+            "function showTab(name){"
+            "document.getElementById('panel-fridge').classList.toggle('active',name==='fridge');"
+            "document.getElementById('tab-fridge').classList.toggle('active',name==='fridge');"
+            "}"
             "async function recordViaDevice(p){"
             "let remaining=" + String((int)(MIC_RECORD_DURATION_MS / 1000)) + ";"
             "document.getElementById('rec-mic-'+p).disabled=true;"
@@ -446,6 +529,149 @@ void RequestMicRecording(int personIdx);       // apibrezta zemiau, prie loop()
 void RequestMicRecordStop();                   // apibrezta zemiau, prie loop()
 const char *MicRecordGetStateStr();            // apibrezta zemiau, prie loop()
 
+// 2026-09-05 (vartotojo pastaba: "ok, pasw: OldBoy") — adminke dabar
+// pasiekiama IR per Tailscale is bet kur (zr. README naujausia sesija),
+// tad reikalingas bent paprastas HTTP Basic Auth. Grazina true, jei
+// autentifikuotas; jei ne, PATI issiuncia 401 atsakyma (naršykle parodys
+// prisijungimo langa) — kviecianti funkcija tada TURI iskart grizti.
+static bool checkAdminAuth(AsyncWebServerRequest *request) {
+    if (request->authenticate(SECRET_ADMIN_USER, SECRET_ADMIN_PASSWORD)) return true;
+    request->requestAuthentication();
+    return false;
+}
+
+// 2026-09-05 (vartotojo pastaba: "juk turi buti dvi adminkes... man reikia
+// kitos" + "svarbu ne tik parasyti zinutes... o valdyti esp-32 flashinima")
+// — SAVININKO puslapis (slaptazodis, zr. checkAdminAuth): sistemos bukle,
+// kameros/atpazinimo nustatymai, IR nuotolinis firmware atnaujinimas (OTA) —
+// TIKSLAS: valdyti visa saldytuvo projekta net busiant 15km atstumu (zr.
+// README, Tailscale sesija), be USB kabelio.
+static String formatUptime(uint32_t ms) {
+    uint32_t totalSec = ms / 1000;
+    uint32_t days = totalSec / 86400;
+    uint32_t hours = (totalSec % 86400) / 3600;
+    uint32_t mins = (totalSec % 3600) / 60;
+    uint32_t secs = totalSec % 60;
+    char buf[48];
+    if (days > 0) {
+        snprintf(buf, sizeof(buf), "%ud %uh %um %us", days, hours, mins, secs);
+    } else if (hours > 0) {
+        snprintf(buf, sizeof(buf), "%uh %um %us", hours, mins, secs);
+    } else {
+        snprintf(buf, sizeof(buf), "%um %us", mins, secs);
+    }
+    return String(buf);
+}
+
+static String buildOwnerPage() {
+    String html;
+    html.reserve(4096);
+    html += "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            "<title>Savininko adminke</title>"
+            "<style>"
+            "*{box-sizing:border-box;}"
+            "body{font-family:-apple-system,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;"
+            "padding:12px;background:#1c1f26;color:#e4e6eb;}"
+            "h1{font-size:18px;margin:0 0 12px;color:#f0a500;}"
+            "a{color:#6cb6ff;}"
+            ".card{background:#262b36;border-radius:10px;padding:12px 14px;margin-bottom:12px;"
+            "border-left:5px solid #f0a500;}"
+            ".card h3{margin:0 0 8px;font-size:15px;color:#f0a500;}"
+            ".row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0;"
+            "border-bottom:1px solid #333;}"
+            ".row span:last-child{color:#9fd88a;font-family:monospace;}"
+            "label{font-size:12px;color:#9aa4ad;display:block;margin:8px 0 3px;}"
+            "input[type=number],input[type=file]{width:100%;font-size:14px;font-family:inherit;"
+            "border-radius:6px;border:1px solid #444;padding:6px 8px;background:#1c1f26;color:#e4e6eb;}"
+            "button{padding:8px 14px;font-size:13px;border:none;border-radius:7px;"
+            "background:#f0a500;color:#1c1f26;font-weight:600;cursor:pointer;margin-top:8px;}"
+            "button:disabled{opacity:.4;cursor:default;}"
+            "button.danger{background:#e74c3c;color:#fff;}"
+            ".status{font-size:12px;color:#9aa4ad;margin-top:6px;}"
+            "progress{width:100%;margin-top:8px;}"
+            "</style></head><body>"
+            "<h1>🔧 Savininko adminke</h1>"
+            "<p><a href='/admin'>&larr; Šeimos adminkė</a></p>";
+
+    html += "<div class='card'><h3>Sistemos būklė</h3>";
+    html += "<div class='row'><span>Veikimo laikas</span><span>" + formatUptime(millis()) + "</span></div>";
+    html += "<div class='row'><span>WiFi signalas</span><span>" + String(WiFi.RSSI()) + " dBm</span></div>";
+    html += "<div class='row'><span>Laisva RAM</span><span>" + String(ESP.getFreeHeap() / 1024) + " KB</span></div>";
+    html += "<div class='row'><span>LittleFS naudojama</span><span>" +
+            String(LittleFS.usedBytes() / 1024) + " / " + String(LittleFS.totalBytes() / 1024) + " KB</span></div>";
+    html += "<div class='row'><span>Firmware versija</span><span>" + String(__DATE__) + " " + String(__TIME__) + "</span></div>";
+    html += "</div>";
+
+    sensor_t *sensor = esp_camera_sensor_get();
+    html += "<div class='card'><h3>Kameros nustatymai</h3>";
+    html += "<form method='POST' action='/admin/owner/camera'>";
+    html += "<label>AE lygis (-2 .. 2, didesnis = šviesiau)</label>";
+    html += "<input type='number' name='ae_level' min='-2' max='2' value='" +
+            String(sensor ? sensor->status.ae_level : 2) + "'>";
+    html += "<label>Gain ceiling (0-6, didesnis = daugiau triukšmo, bet šviesiau)</label>";
+    html += "<input type='number' name='gainceiling' min='0' max='6' value='" +
+            String(sensor ? sensor->status.gainceiling : 4) + "'>";
+    html += "<button type='submit'>Pritaikyti</button>";
+    html += "</form>";
+    html += "<p style='margin-top:10px;'><a href='/admin/owner/snapshot' target='_blank'>📷 Peržiūrėti dabartinį kameros kadrą</a></p>";
+    html += "</div>";
+
+    // 2026-09-05 (vartotojo pastaba: "svarbu... valdyti esp-32 flashinima")
+    // — OTA (Over-The-Air) firmware atnaujinimas: ikeliamas naujas .bin
+    // (PlatformIO "Build" veiksmo rezultatas, .pio/build/esp32-s3-cam/
+    // firmware.bin), ESP32 israso i NEAKTYVIA OTA partiicija (app0/app1,
+    // jau numatytos default_16MB.csv), po sekmingo israsymo persikrauna i
+    // ja. NEBEREIKIA USB kabelio/fizinio priejimo prie irenginio.
+    html += "<div class='card'><h3>⚠️ Firmware atnaujinimas (OTA)</h3>";
+    html += "<p style='font-size:13px;color:#9aa4ad;'>Ikelk .pio/build/esp32-s3-cam/firmware.bin "
+            "(po 'pio run' kompiliavimo). Irenginys persikraus automatiskai po sekmingo irasymo.</p>";
+    html += "<input type='file' id='ota-file' accept='.bin'>";
+    html += "<button type='button' id='ota-btn' onclick='uploadOta()'>⬆️ Įkelti ir flash'inti</button>";
+    html += "<progress id='ota-progress' value='0' max='100' style='display:none;'></progress>";
+    html += "<div class='status' id='ota-status'></div>";
+    html += "</div>";
+
+    html += "<script>"
+            "function uploadOta(){"
+            "let f=document.getElementById('ota-file').files[0];"
+            "if(!f){alert('Pasirink .bin faila');return;}"
+            "let btn=document.getElementById('ota-btn');"
+            "let prog=document.getElementById('ota-progress');"
+            "let status=document.getElementById('ota-status');"
+            "btn.disabled=true;prog.style.display='block';prog.value=0;"
+            "status.textContent='Siunčiama...';"
+            "let xhr=new XMLHttpRequest();"
+            "xhr.open('POST','/admin/owner/ota');"
+            // KRITINE KLAIDA rasta 2026-09-05 testuojant per curl — jei
+            // Content-Type NEBUNA aiskiai 'application/octet-stream',
+            // AsyncWebServer bando .bin faila skaityti kaip
+            // "application/x-www-form-urlencoded" forma (simbolis po
+            // simbolio), kas UZSTRIGDO IRENGINI VISISKAI (be watchdog
+            // gaudymo, reikejo fizinio reset). Naršyklė .bin failui gali
+            // NESUSTATYTI jokio Content-Type (tuscias), todel BUTINA
+            // nurodyti aiskiai, o ne pasitiketi numatytuoju elgesiu.
+            "xhr.setRequestHeader('Content-Type','application/octet-stream');"
+            "xhr.upload.onprogress=function(e){"
+            "if(e.lengthComputable){prog.value=Math.round(e.loaded/e.total*100);}"
+            "};"
+            "xhr.onload=function(){"
+            "if(xhr.status===200){"
+            "status.textContent='Sėkmė! Įrenginys persikrauna su nauja versija (~10s)...';"
+            "}else{"
+            "status.textContent='Klaida: '+xhr.responseText;"
+            "btn.disabled=false;"
+            "}"
+            "};"
+            "xhr.onerror=function(){status.textContent='Klaida siunčiant (tikriausiai jau persikrauna)';};"
+            "xhr.send(f);"
+            "}"
+            "</script>";
+
+    html += "</body></html>";
+    return html;
+}
+
 void initWebServer() {
 #ifdef DEVELOPMENT_MODE
     // Kadravimo/atstumo kalibravimo pagalba — TIK dev metu, zr. platesne
@@ -485,9 +711,130 @@ void initWebServer() {
     });
 #endif
 
-    s_webServer.on("/admin", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send(200, "text/html; charset=utf-8", buildAdminPage());
+    // 2026-09-05 (vartotojo pastaba: "man reikia kitos [adminkes]" +
+    // "svarbu... valdyti esp-32 flashinima") — SAVININKO puslapis, TIK per
+    // checkAdminAuth() (slaptazodis, zr. secrets.h). Zr. buildOwnerPage()
+    // pastaba virs del viso konteksto.
+    //
+    // TVARKA SVARBI: plikas "/admin/owner" (GET) registruojamas ZEMIAU,
+    // PO "/admin/owner/snapshot" (GET) — priesingu atveju "/admin/owner"
+    // prarytu tos pacios metodo GET uzklausas i "/admin/owner/snapshot"
+    // (zr. platesne pastaba prie plikojo "/admin" initWebServer() gale).
+    s_webServer.on("/admin/owner/camera", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (!checkAdminAuth(request)) return;
+        sensor_t *sensor = esp_camera_sensor_get();
+        if (sensor) {
+            if (request->hasParam("ae_level", true)) {
+                sensor->set_ae_level(sensor, request->getParam("ae_level", true)->value().toInt());
+            }
+            if (request->hasParam("gainceiling", true)) {
+                sensor->set_gainceiling(sensor, (gainceiling_t)request->getParam("gainceiling", true)->value().toInt());
+            }
+        }
+        request->redirect("/admin/owner");
     });
+
+    // Nuotolinis kadro patikrinimas — TAS PATS principas kaip dev-only
+    // /snapshot virs, bet PASTOVIAI prieinamas (uz slaptazodzio), nes
+    // savininkui naudinga per Tailscale patikrinti, ka kamera mato, be
+    // fizinio priejimo.
+    s_webServer.on("/admin/owner/snapshot", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!checkAdminAuth(request)) return;
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) {
+            request->send(503, "text/plain", "Kameros kadras nepavyko");
+            return;
+        }
+        AsyncWebServerResponse *response = request->beginResponse(
+            "image/jpeg", fb->len,
+            [fb](uint8_t *buffer, size_t maxLen, size_t alreadySent) -> size_t {
+                size_t toCopy = fb->len - alreadySent;
+                if (toCopy > maxLen) toCopy = maxLen;
+                memcpy(buffer, fb->buf + alreadySent, toCopy);
+                if (alreadySent + toCopy >= fb->len) esp_camera_fb_return(fb);
+                return toCopy;
+            });
+        request->send(response);
+    });
+
+    s_webServer.on("/admin/owner", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!checkAdminAuth(request)) return;
+        request->send(200, "text/html; charset=utf-8", buildOwnerPage());
+    });
+
+    // 2026-09-05 (vartotojo pastaba: "svarbu... valdyti esp-32 flashinima")
+    // — OTA firmware ikelimas, RAW binarinis POST body (.bin failas
+    // tiesiogiai, ne multipart/form-data). Update.h biblioteka israso i
+    // NEAKTYVIA OTA partiicija (app0/app1, jau numatytos default_16MB.csv),
+    // Update.end(true) patikrina vientisuma ir pazymi ja kaip paleidziama.
+    // s_otaAuthorized (static, per-callback) apsaugo, kad neautentifikuotas
+    // POST negalėtu net PRADETI rasyti i flash.
+    s_webServer.on(
+        "/admin/owner/ota", HTTP_POST,
+        [](AsyncWebServerRequest *request) {
+            if (!checkAdminAuth(request)) return;
+            bool ok = !Update.hasError();
+            Serial.printf("[OTA] Baigimo handleris: ok=%s\n", ok ? "true" : "false");
+            Serial.flush();
+            AsyncWebServerResponse *response = request->beginResponse(
+                ok ? 200 : 500, "text/plain", ok ? "OK" : Update.errorString());
+            response->addHeader("Connection", "close");
+            request->send(response);
+            if (ok) {
+                // 2026-09-05: restart per atskira Task su nedideliu delay,
+                // kad HTTP atsakymas spetu tikrai issisiusti klientui pries
+                // persikraunant.
+                xTaskCreate(
+                    [](void *) {
+                        vTaskDelay(pdMS_TO_TICKS(1000));
+                        ESP.restart();
+                    },
+                    "otaRestart", 2048, nullptr, 1, nullptr);
+            }
+        },
+        nullptr,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            static bool s_otaAuthorized = false;
+            static uint32_t s_otaLastLogMs = 0;
+            if (index == 0) {
+                s_otaAuthorized = checkAdminAuth(request);
+                if (!s_otaAuthorized) return;
+                Serial.printf("[OTA] Pradedama, dydis=%u baitu, laisva RAM=%u\n",
+                              (unsigned)total, (unsigned)ESP.getFreeHeap());
+                Serial.flush();
+                if (!Update.begin(total)) {
+                    Serial.printf("[OTA] KLAIDA: Update.begin(): %s\n", Update.errorString());
+                    Serial.flush();
+                    s_otaAuthorized = false;
+                    return;
+                }
+                s_otaLastLogMs = millis();
+            }
+            if (!s_otaAuthorized) return;
+            uint32_t writeStartMs = millis();
+            size_t written = Update.write(data, len);
+            uint32_t writeMs = millis() - writeStartMs;
+            if (written != len) {
+                Serial.printf("[OTA] KLAIDA rasant (%u/%u baitu, %u ms): %s\n",
+                              (unsigned)written, (unsigned)len, (unsigned)writeMs, Update.errorString());
+                Serial.flush();
+            } else if (millis() - s_otaLastLogMs > 1000) {
+                s_otaLastLogMs = millis();
+                Serial.printf("[OTA] progresas: %u/%u baitu (%.0f%%), sis chunk'as %u ms, laisva RAM=%u\n",
+                              (unsigned)(index + len), (unsigned)total,
+                              100.0f * (index + len) / total, (unsigned)writeMs,
+                              (unsigned)ESP.getFreeHeap());
+                Serial.flush();
+            }
+            if (index + len == total) {
+                if (Update.end(true)) {
+                    Serial.println("[OTA] Sekmingai israsyta.");
+                } else {
+                    Serial.printf("[OTA] KLAIDA baigiant: %s\n", Update.errorString());
+                }
+                Serial.flush();
+            }
+        });
 
     // Balso zinutes ikelimas — RAW binarinis POST body (narsykles JS siuncia
     // WAV baitus tiesiogiai, ne multipart/form-data), issaugoma LittleFS
@@ -558,20 +905,43 @@ void initWebServer() {
         request->send(200, "text/plain", "OK");
     });
 
+    // 2026-09-05 (vartotojo pastaba: "galime padaryti slapta skyriu...
+    // reikia lenteleje dar vieno stulpelio") — "kind" parametras ("public"
+    // arba "private") atskiria admin formos siusta zinute, zr.
+    // family_messages.h MessageKind.
     s_webServer.on("/admin/message", HTTP_POST, [](AsyncWebServerRequest *request) {
         if (request->hasParam("person", true) && request->hasParam("text", true)) {
             int personIdx = request->getParam("person", true)->value().toInt();
             String text = request->getParam("text", true)->value();
             text.trim();
+            String kindStr = request->hasParam("kind", true) ? request->getParam("kind", true)->value() : "public";
+            MessageKind kind = (kindStr == "private") ? MessageKind::PRIVATE : MessageKind::PUBLIC;
             if (personIdx > 0 && personIdx < PERSON_COUNT) {
                 if (text.length() == 0) {
-                    FamilyMessages_Clear((RecognizedPerson)personIdx);
+                    FamilyMessages_Clear((RecognizedPerson)personIdx, kind);
                 } else {
-                    FamilyMessages_Set((RecognizedPerson)personIdx, text.c_str());
+                    FamilyMessages_Set((RecognizedPerson)personIdx, kind, text.c_str());
                 }
             }
         }
         request->redirect("/admin");
+    });
+
+    // KRITINE KLAIDA rasta 2026-09-05, kuriant /admin/owner — AsyncWebServer
+    // NEATLIEKA tikslaus URL atitikimo: handler->canHandle() grazina true
+    // NE TIK jei _uri==url, bet IR jei url.startsWith(_uri+"/") (zr.
+    // WebHandlerImpl.h). Pirmas UZREGISTRUOTAS handler'is, kuris "canHandle",
+    // LAIMI (WebServer.cpp _attachHandler). Todel plikas "/admin" (GET)
+    // PRARYDAVO VISUS veliau uzregistruotus GET maршrutus po juo su tuo
+    // paciu keliu prefiksu — /admin/owner, /admin/owner/snapshot IR
+    // (jau SENIAI, tyliai) /admin/record_status! (POST marsrutai issivenge
+    // sios klaidos vien todel, kad /admin registruotas TIK HTTP_GET, o
+    // metodo neatitikimas atmeta canHandle() ANKSCIAU nei URI patikra.)
+    // FIX: "/admin" (bendriausias GET kelias) registruojamas PASKUTINIS —
+    // visi specifiskesni /admin/* GET marsrutai jau uzregistruoti ANKSCIAU
+    // ir laimi pirmumo tvarka.
+    s_webServer.on("/admin", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html; charset=utf-8", buildAdminPage());
     });
 
     s_webServer.begin();
