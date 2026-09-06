@@ -2,6 +2,7 @@
 #include "family_messages.h"
 #include "eye_renderer.h"
 #include "lv_fonts_lt.h"
+#include "lv_icons.h"
 #include "audio_output.h"
 #include <Arduino.h>
 #include <LittleFS.h>
@@ -162,9 +163,13 @@ static void createNameButton(lv_obj_t *parent, RecognizedPerson person,
     lv_obj_align(btn, LV_ALIGN_TOP_MID, xOffset, yOffset);
     lv_obj_add_event_cb(btn, nameButtonEventCb, LV_EVENT_CLICKED, (void *)(intptr_t)person);
 
+    // 2026-09-06 (vartotojo pastaba: "tas pačias ikonas įmesk į esp meniu
+    // ir asmeninius puslapius") — lv_icons_22 turi TIK 5 emoji glifus, BET
+    // fallback grandine nukreipia i lv_font_lt_22 (lietuviskos raides) —
+    // VIENAS fontas uztenka visai eilutei (ikona + tarpas + vardas).
     lv_obj_t *lbl = lv_label_create(btn);
-    lv_label_set_text(lbl, p.publicName);
-    lv_obj_set_style_text_font(lbl, &lv_font_lt_22, 0);
+    lv_label_set_text_fmt(lbl, "%s %s", LvIcons_GetPersonIcon(person), p.publicName);
+    lv_obj_set_style_text_font(lbl, &lv_icons_22, 0);
     lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
     lv_obj_center(lbl);
 }
@@ -255,8 +260,8 @@ void UI_ShowChildGreeting(const PersonProfile &p) {
     // "Animuotas elementas" — paprastas fade+zoom pasisveikinimo uzrasas.
     // Apacioje (akys uzima virsutine dali, zr. EYE_Y_OFFSET).
     lv_obj_t *greeting = lv_label_create(s_scrChild);
-    lv_label_set_text_fmt(greeting, "Labas, %s! :)", p.vocativeName);
-    lv_obj_set_style_text_font(greeting, &lv_font_lt_28, 0);
+    lv_label_set_text_fmt(greeting, "%s Labas, %s! :)", LvIcons_GetPersonIcon(p.id), p.vocativeName);
+    lv_obj_set_style_text_font(greeting, &lv_icons_28, 0);
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
     lv_obj_align(greeting, LV_ALIGN_CENTER, 0, 70);
     lv_obj_set_style_opa(greeting, LV_OPA_TRANSP, 0);
@@ -298,8 +303,8 @@ void UI_ShowAdultGreeting(const PersonProfile &p) {
 
     // Vardas — apacioje, po akimis (akys uzima virsutine dali).
     lv_obj_t *greeting = lv_label_create(s_scrAdult);
-    lv_label_set_text_fmt(greeting, "Sveikas, %s", p.vocativeName);
-    lv_obj_set_style_text_font(greeting, &lv_font_lt_28, 0);
+    lv_label_set_text_fmt(greeting, "%s Sveikas, %s", LvIcons_GetPersonIcon(p.id), p.vocativeName);
+    lv_obj_set_style_text_font(greeting, &lv_icons_28, 0);
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
     lv_obj_align(greeting, LV_ALIGN_CENTER, 0, 35);
 
@@ -357,8 +362,8 @@ void UI_ShowPublicGreeting(const PersonProfile &p) {
     EyeRenderer_SetState(EYE_STATE_HAPPY);
 
     lv_obj_t *greeting = lv_label_create(s_scrPublic);
-    lv_label_set_text_fmt(greeting, "Labas, %s!", p.vocativeName);
-    lv_obj_set_style_text_font(greeting, &lv_font_lt_28, 0);
+    lv_label_set_text_fmt(greeting, "%s Labas, %s!", LvIcons_GetPersonIcon(p.id), p.vocativeName);
+    lv_obj_set_style_text_font(greeting, &lv_icons_28, 0);
     lv_obj_set_style_text_color(greeting, p.themeAccent, 0);
     lv_obj_align(greeting, LV_ALIGN_CENTER, 0, 50);
 

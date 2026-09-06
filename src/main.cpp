@@ -20,6 +20,9 @@
 #include <time.h>
 #include <Wire.h>
 #include <SD_MMC.h>
+#include <driver/sdmmc_host.h>
+#include <esp_vfs_fat.h>
+#include <sdmmc_cmd.h>
 #include <esp_camera.h>
 #include <ESPAsyncWebServer.h>
 #include <lvgl.h>
@@ -135,25 +138,66 @@ void syncTime() {
     }
 }
 
+// 2026-09-06 (vartotojo pastaba: "gal truko draiveriu?") — ISSAMI
+// diagnostika, VISOS hipotezes patikrintos ir ATMESTOS su REALIU hardware
+// testu (ne vien teorija):
+//
+// 1. `SDMMC_SLOT_FLAG_INTERNAL_PULLUP` (ESP-IDF vidinis pull-up bitas,
+//    senesnis pavadinimas nei naujesnes ESP-IDF `.flags.enable_internal_
+//    pullup` sub-struct forma, TA PATI funkcija) — Arduino SD_MMC.cpp
+//    sio NIEKADA nenustato, tad apeita Arduino klase VISISKAI ir
+//    kvieciama `esp_vfs_fat_sdmmc_mount()` TIESIOGIAI. NEPADEJO.
+//
+// 2. Israuktu pull-up rezistoriu trukumas — PATIKRINTA TIESIOGIAI tikroje
+//    Waveshare schemoje (files.waveshare.com/wiki/ESP32-S3-CAM-OVxxxx/
+//    ESP32-S3-CAM-XXXX-schematic.pdf, atsisiusta ir teksto sluoksnis
+//    israuktas su pdftotext): R31-R36 (6x 10K pull-up) TIKRAI YRA
+//    plokstej prie SD jungties J12. ATMESTA kaip priezastis.
+//
+// 3. Galimas SD lizdo ijungimo/CS signalas per CH32V003 IO pletikli (ta
+//    pati architekturos idioma kaip audio PA_EN, P4) — schemoje yra
+//    signalas "SD_CS" prijungtas prie to paties pletiklio, bet tikslus
+//    EXIO numeris NEAISKUS is PDF teksto (stulpeliai susimaiso) IR
+//    Waveshare saltiniai PRIESTARAUJA (Arduino sablonas teigia "IO4 = SD
+//    CS", bet MES JAU PATIKRINOME REALIU testu, kad IO4 yra audio PA_EN,
+//    ne SD — komentaras klaidingas/pasenes). EMPIRINIS visu neuzimtu EXIO
+//    pinu (P2,P5,P6,P7) perrinkimas abiem lygiais — VISI 8 bandymai
+//    NEPADEJO, identiska 0x107 klaida kiekvienu atveju.
+//
+// ISVADA: visos programines/EXIO hipotezes ISNAUDOTOS ir ATMESTOS.
+// Sekantis zingsnis — FIZINIS multimetro patikrinimas (kortele ISIMTA:
+// varza GPIO43/CMD->3V3 ir GPIO44/D0->3V3, turi buti ~10K; kortele
+// IDETA: itampa SD VDD->GND, turi buti ~3.3V) — jei abu geri, greiciausiai
+// pati kortele/kontaktai, ne plokstes dizainas. Zr. scratchpad
+// sd_card_problem_summary.md pilnai istorijai (ChatGPT konsultacija).
 bool initSDCard() {
-    Serial.println("[SD] Inicijuojama SD kortele (native SDMMC 1-bit)...");
-    SD_MMC.setPins(SD_CLK_PIN, SD_CMD_PIN, SD_D0_PIN);
-    // Diagnostika 2026-09-03: 0x107 (ESP_ERR_TIMEOUT) send_op_cond zingsnyje
-    // net su TIKRAI veikiancia (kitame kompiuteryje ka tik performatuota)
-    // kortele — bandome zemesni SDMMC_FREQ_DEFAULT (20MHz) vietoj numatytojo
-    // SDMMC_FREQ_HIGHSPEED (40MHz), jei tai laikinimo/signalo kokybes klausimas.
-    if (!SD_MMC.begin("/sdcard", true /* 1-bit rezimas */, false, SDMMC_FREQ_DEFAULT)) {
-        Serial.println("[SD] Klaida: SD kortele nerasta arba nepavyko inicijuoti.");
+    Serial.println("[SD] Inicijuojama SD kortele (native SDMMC 1-bit, vidinis pull-up)...");
+
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.clk = (gpio_num_t)SD_CLK_PIN;
+    slot_config.cmd = (gpio_num_t)SD_CMD_PIN;
+    slot_config.d0 = (gpio_num_t)SD_D0_PIN;
+    slot_config.width = 1;
+    slot_config.flags = SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.flags = SDMMC_HOST_FLAG_1BIT;
+    host.slot = SDMMC_HOST_SLOT_1;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
+    mount_config.format_if_mount_failed = false;
+    mount_config.max_files = 5;
+    mount_config.allocation_unit_size = 0;
+
+    sdmmc_card_t *card = nullptr;
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+    if (ret != ESP_OK) {
+        Serial.printf("[SD] Klaida: esp_vfs_fat_sdmmc_mount = %d (%s)\n", ret, esp_err_to_name(ret));
         return false;
     }
 
-    uint8_t cardType = SD_MMC.cardType();
-    if (cardType == CARD_NONE) {
-        Serial.println("[SD] Klaida: kortele neiterpta.");
-        return false;
-    }
-
-    uint64_t cardSizeMB = SD_MMC.cardSize() / (1024 * 1024);
+    uint64_t cardSizeMB = ((uint64_t)card->csd.capacity) * card->csd.sector_size / (1024 * 1024);
     Serial.printf("[SD] Kortele rasta. Dydis: %llu MB\n", cardSizeMB);
     return true;
 }
@@ -365,11 +409,16 @@ static const char *ADMIN_ACCENT_COLORS[PERSON_COUNT] = {
 // nedidelės spalvotos ikonėlės") — po vieną emoji kiekvienam, ta pati
 // tvarka kaip ADMIN_ACCENT_COLORS virs. Nera standartinio "ragatkos"
 // emoji Unikode, tad Seneliui naudojama artimiausia — lankas ir strele.
+// Sauliaus ikona (medicinos simbolis ⚕, ne stetoskopas 🩺) TYCIA SUTAMPA
+// su lib/lv_icons/ (ESP32 ekrano ikonos) — vartotojo pastaba 2026-09-06:
+// "pakeisk vien tik stetoskopą" (LVGL ekrane atrode nesuprantamai mazame
+// dydyje) — pakeista ABIEJOSE vietose nuoseklumui, kad tas pats zmogus
+// visur turetu ta pacia ikona.
 static const char *ADMIN_PERSON_ICONS[PERSON_COUNT] = {
     "",    // PERSON_UNKNOWN — nenaudojama
     "🦄",  // GRANDDAUGHTER_1 (Saulytė) — vienaragis
     "🐢",  // GRANDDAUGHTER_2 (Upytė) — vėžlys
-    "🩺",  // SON (Saulius) — daktaras
+    "⚕️",  // SON (Saulius) — medicinos simbolis
     "❤️",  // WIFE (Monika) — širdelė
     "🏹",  // SELF (Senelis) — šaulys (artimiausias emoji ragatkai)
 };

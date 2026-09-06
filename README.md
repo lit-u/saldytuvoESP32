@@ -545,4 +545,28 @@ Vartotojo prašymu, kiekvienam šeimos nariui pridėta maža emoji ikonėlė ša
 
 ### Galimybė ateičiai: balso žinutės P10 telefono atmintyje (40GB), ne ESP32 flash
 
-Vartotojo klausimas: "ar galime vietoj neveikiančio SD lizdo ir ESP32 flash atminties naudoti P10 hardą?" Šiuo metu LittleFS (~3.4MB) naudojama TIK balso žinutėms (~130KB/žmogui, IMA ADPCM) — vietos dar daug. Techniškai įmanoma perkelti saugojimą į P10 (jau veikiantis HTTP serveris atpažinimui), bet reikalautų pakeisti PAČIĄ Android programėlę telefone (atskiras kodas, NE šiame repo) — pridėti failų įkėlimo/atsisiuntimo API. Vartotojas patvirtino, kad tai tik ATSARGA ateičiai (ilgesni įrašai, daugiau žmonių, nuotraukos), ne skubus poreikis — pirmiau bus bandoma pataisyti pačią SD kortelės jungtį (tikėtina, trūksta pull-up rezistorių, žr. anksčiau šiame README), kai atsiras tinkami įrankiai.
+Vartotojo klausimas: "ar galime vietoj neveikiančio SD lizdo ir ESP32 flash atminties naudoti P10 hardą?" Šiuo metu LittleFS (~3.4MB) naudojama TIK balso žinutėms (~130KB/žmogui, IMA ADPCM) — vietos dar daug. Techniškai įmanoma perkelti saugojimą į P10 (jau veikiantis HTTP serveris atpažinimui), bet reikalautų pakeisti PAČIĄ Android programėlę telefone (atskiras kodas, NE šiame repo) — pridėti failų įkėlimo/atsisiuntimo API. Vartotojas patvirtino, kad tai tik ATSARGA ateičiai (ilgesni įrašai, daugiau žmonių, nuotraukos), ne skubus poreikis — pirmiau bus bandoma pataisyti pačią SD kortelės jungtį, kai atsiras tinkami įrankiai (žr. žemiau — išvada pasikeitė nuo pirminio "trūksta pull-up" spėjimo).
+
+### SD kortelė — išsami diagnostika, VISOS programinės hipotezės atmestos, reikia fizinio patikrinimo
+
+Vartotojo klausimas: "nelogiška, kad Waveshare pagamino ESP32 su kortele, kurią dar reikia pačiam perlituoti... gal trūko draiverių?" Paskatino išsamų pakartotinį tyrimą, PATAISANT ankstesnę (2026-09-03) prielaidą.
+
+**Klaida** (visada ta pati, `send_op_cond` žingsnyje, ACMD41): `E sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107` (`ESP_ERR_TIMEOUT`).
+
+**Trys programinės hipotezės, VISOS patikrintos REALIU hardware testu ir ATMESTOS:**
+
+1. **`SDMMC_SLOT_FLAG_INTERNAL_PULLUP`** (ESP-IDF vidinis pull-up bitas — senesnis pavadinimas tam pačiam mechanizmui kaip naujesnės ESP-IDF `.flags.enable_internal_pullup`; PIRMAS patikrinimas klaidingai nusprendė, kad šis mechanizmas apskritai neegzistuoja mūsų framework versijoje — antras, tikslesnis patikrinimas rado teisingą pavadinimą). Apeita Arduino `SD_MMC` klasė visiškai, kviečiant `esp_vfs_fat_sdmmc_mount()` tiesiogiai su šiuo bitu įjungtu. **Nepadėjo** — identiška 0x107.
+
+2. **Išorinių pull-up rezistorių trūkumas** — PATIKRINTA prieš TIKRĄ Waveshare schemą (atsisiųsta oficiali `ESP32-S3-CAM-XXXX-schematic.pdf`, teksto sluoksnis ištrauktas su `pdftotext`, nes automatinis PDF puslapių atvaizdavimas šioje mašinoje neveikė be `poppler-utils`). **R31-R36 (6× 10KΩ pull-up rezistoriai) TIKRAI YRA** plokštėje prie SD jungties J12 — pirminis (2026-09-03) spėjimas apie trūkstamus pull-up'us buvo NETEISINGAS, hardware šiuo požiūriu tvarkingas.
+
+3. **Galimas SD lizdo įjungimo/CS signalas per CH32V003 IO plėtiklį** (ta pati architektūros idioma kaip audio stiprintuvo PA_EN, žr. anksčiau šiame README) — schemoje yra signalas "SD_CS" prijungtas prie to paties plėtiklio. Tikslus EXIO numeris neaiškus iš PDF teksto (daugiastulpelė schema susimaišo ištraukus tekstą), o Waveshare šaltiniai PRIEŠTARAUJA vieni kitiems (Arduino v3.2.0 šablono `io_extension.h` komentaras teigia "IO4 = SD card CS pin" — BET mes JAU PATIKRINOME realiu testu, kad IO4 iš tikrųjų yra audio PA_EN, ne SD; komentaras klaidingas/pasenęs, panašiai kaip anksčiau rastas klaidingas "P6 = raudona LED" teiginys). EMPIRINIS visų neužimtų EXIO pinų (P2, P5, P6, P7) perrinkimas abiem lygiais, VISI 8 bandymai — **nepadėjo**, identiška 0x107 klaida kiekvienu atveju.
+
+**Antrosios AI konsultacijos rezultatas** (ChatGPT, ta pati praktika kaip audio saga) — nepriklausomai patvirtino tą pačią išvadą: visos protingos programinės hipotezės išnaudotos, reikalingas fizinis patikrinimas. Pridėjo vertingą papildomą testą, kurio patys nebuvome numatę: **išbandyti kitą SD kortelę** (jei turima) — paprasčiausias, be jokių įrankių atliekamas testas, atskiriantis "kortelės kaltė" nuo "plokštės/lizdo kaltė".
+
+**Kontrolinis sąrašas fiziniam patikrinimui (kai atsiras įrankiai):**
+1. ~~Išbandyti KITĄ microSD kortelę, jei yra~~ — ATLIKTA 2026-09-06: vartotojas pakeitė kortelę, priverstas reboot per OTA (be USB), **TA PATI 0x107 klaida**. Dvi skirtingos kortelės elgiasi identiškai — **kortelės kaltė dabar mažai tikėtina**, ChatGPT tikimybių lentelėje "SD maitinimas" ir "SD lizdo kontaktas/litavimas" tapo labiausiai tikėtini likę kaltininkai.
+2. Kortelė IŠIMTA — multimetru išmatuoti varžą nuo kiekvienos linijos į 3.3V: CMD (GPIO43), D0 (GPIO44), CLK (GPIO16), D1, D2, D3 — visos turėtų rodyti ~10KΩ (patvirtina/paneigia R31-R36 realų sulitavimą šiame konkrečiame egzemplioriuje).
+3. Kortelė ĮDĖTA — išmatuoti įtampą SD lizdo VDD→GND kontaktuose — turėtų būti ~3.3V. **Dabar prioritetinis matavimas** (žr. punktą 1).
+4. Jei 2-3 punktai geri, bet vis tiek neveikia — logikos analizatorius ant CLK/CMD/D0, patikrinti, ar ESP32 apskritai siunčia signalus ir ar kortelė bent kartą atsako per D0.
+
+Pilna diagnostikos istorija (ChatGPT užklausa ir atsakymas) — `scratchpad/sd_card_problem_summary.md` (nekomitinta, sesijos laikina).
