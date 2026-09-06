@@ -40,6 +40,23 @@
 #include "deep_sleep.h"
 #include "audio_output.h"
 
+// 2026-09-06: nuotraukos rodymas SCANNING ekrane (zr. UI_ScanningShowPhoto())
+// TJpgDec dekoduojant SVGA (800x600) atpazinimo kadra sukele TIKRA "Stack
+// canary watchpoint triggered (loopTask)" avaria — LVGL pisimo iskvietimu
+// grandine (lv_draw_sw_image -> lv_image_decoder_open -> decoder_info/
+// decoder_open -> TJpgDec) siai rezoliucijai naudoja daugiau stack'o nei
+// numatytieji 8KB Arduino loopTask (main.cpp cores/esp32/main.cpp). BANDYMAS
+// padidinti per platformio.ini "-DCONFIG_ARDUINO_LOOP_STACK_SIZE" NEVEIKE —
+// framework'o paties "sdkconfig.h" #include (kuris vyksta PO musu -D flag'o)
+// tyliai (GCC warning, ne klaida) PERRASO ta pati makrosa atgal i 8192.
+// TEISINGAS budas: cores/esp32/main.cpp deklaruoja SILPNA (weak) funkcija
+// `getArduinoLoopTaskStackSize()` btent tam, kad projektas ja perrasytu —
+// tai apeina makroso konflikta visiskai (funkcijos, ne preprocesoriaus,
+// override).
+size_t getArduinoLoopTaskStackSize(void) {
+    return 20480;  // 8192 -> 20480 (2.5x), patikimai virs SVGA TJpgDec poreikio
+}
+
 // ---------------------------------------------------------------------------
 // KONFIGURACIJA
 // ---------------------------------------------------------------------------

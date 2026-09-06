@@ -6,6 +6,8 @@
 #include "audio_output.h"
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <esp_heap_caps.h>
+#include <string.h>
 
 static lv_obj_t *s_scrStandby = nullptr;
 static lv_obj_t *s_scrScanning = nullptr;
@@ -16,6 +18,7 @@ static lv_obj_t *s_scrPublic = nullptr;
 static lv_obj_t *s_scrPhoto = nullptr;   // 2026-09-06: nuotraukos is P10 rodymui (zr. UI_ShowPhoto)
 static lv_obj_t *s_flashOverlay = nullptr;
 static lv_obj_t *s_scanningLabel = nullptr;
+static lv_obj_t *s_scanningPhoto = nullptr;  // 2026-09-06: "ka bandome atpazinti" (zr. UI_ScanningShowPhoto)
 static void (*s_onPersonSelected)(RecognizedPerson) = nullptr;
 static void (*s_onMenuPressed)() = nullptr;
 
@@ -183,6 +186,15 @@ void UI_Screens_Init(void (*onMenuPressed)()) {
 
     s_scrScanning = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_scrScanning, lv_color_black(), 0);
+    // 2026-09-06: "ka bandome atpazinti" nuotrauka — sukurta ANKSCIAU nei
+    // akys (EyeRenderer_Create), tad EyeRenderer_MoveToParent(s_scrScanning)
+    // (UI_ShowScanning()) prideda akis PASKUI, taigi akys visada VIRSUJE
+    // (z-order) sioje "drobeje" numatytuoju atveju — o UI_ScanningShowPhoto()
+    // paciai nuotraukai iskvieca lv_obj_move_foreground(), kai reikia ja
+    // parodyti VIRS aki. Paslepta pagal nutylejima (rodoma TIK po kadro).
+    s_scanningPhoto = lv_image_create(s_scrScanning);
+    lv_obj_add_flag(s_scanningPhoto, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_center(s_scanningPhoto);
     s_scanningLabel = lv_label_create(s_scrScanning);
     lv_label_set_text(s_scanningLabel, "Sveiki!");
     lv_obj_set_style_text_font(s_scanningLabel, &lv_font_lt_22, 0);
@@ -240,12 +252,60 @@ void UI_ShowScanning() {
     EyeRenderer_MoveToParent(s_scrScanning);
     EyeRenderer_SetState(EYE_STATE_LOOKING);
     lv_label_set_text(s_scanningLabel, "Sveiki!");
+    // Paslepiama nuo PRAEITO ciklo (jei buvo rodyta) — nauja WAKE seka
+    // turi prasideti akimis, NE senos nuotraukos likuciu.
+    lv_obj_add_flag(s_scanningPhoto, LV_OBJ_FLAG_HIDDEN);
     lv_screen_load_anim(s_scrScanning, LV_SCR_LOAD_ANIM_FADE_IN, 200, 0, false);
 }
 
 void UI_SetScanningStatusText(const char *text) {
     if (!s_scanningLabel) return;
     lv_label_set_text(s_scanningLabel, text);
+}
+
+// 2026-09-06: buferis (main.cpp/UI_ShowPhoto() analogija) — nuosavybe
+// face_recognition.cpp puseje, cia tik SAUGOMA nuoroda per s_scanningPhotoDsc.
+static lv_image_dsc_t s_scanningPhotoDsc;
+
+// 2026-09-06 GALUTINIS SPRENDIMAS (po ilgos diagnostikos su ChatGPT, zr.
+// scratchpad/lvgl_scanning_photo_problem_summary.md): LVGL LV_USE_FS_MEMFS +
+// LV_COLOR_FORMAT_RAW + lv_image_set_scale() incremental (TJpgDec tile-po-
+// tile) dekodavimo kelias turi realu, patvirtinta LVGL/vendored-tjpgd.c
+// tarpusavio nesuderinamuma dideliems (SVGA) vaizdams su zoom transformacija
+// (žr. lv_tjpgd.c naujo lv_tjpgd_decode_thumbnail() komentara del tikslaus
+// mechanizmo). Todel JPEG DEKODUOJAMAS PATYS is anksto (app_state_machine.cpp,
+// per lv_tjpgd_decode_thumbnail()) i maza, JAU TINKAMO DYDZIO RGB888 buferi —
+// SIA funkcija tegauna PAPRASTA STATINI paveiksleli, be jokio TJpgDec/scale
+// dalyvavimo LVGL puseje (ta pati, jau IRODYTAI veikianti schema kaip
+// sintetiniai RGB565/RGB888 testai siame projekte).
+void UI_ScanningShowPhoto(const uint8_t *rgb888Data, uint16_t width, uint16_t height) {
+    if (!s_scanningPhoto || !rgb888Data || width == 0 || height == 0) return;
+
+    lv_memset(&s_scanningPhotoDsc, 0, sizeof(s_scanningPhotoDsc));
+    s_scanningPhotoDsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_scanningPhotoDsc.header.cf = LV_COLOR_FORMAT_RGB888;
+    s_scanningPhotoDsc.header.w = width;
+    s_scanningPhotoDsc.header.h = height;
+    s_scanningPhotoDsc.header.stride = width * 3;
+    s_scanningPhotoDsc.data_size = (uint32_t)width * height * 3;
+    s_scanningPhotoDsc.data = rgb888Data;
+
+    lv_image_set_src(s_scanningPhoto, &s_scanningPhotoDsc);
+    // JOKIO lv_image_set_scale() — buferis JAU dekoduotas TIKSLIAI reikiamu
+    // dydziu (zr. app_state_machine.cpp), tad objekto "self size" (natyvus
+    // width x height) TEISINGAI atitinka is karto rodoma turini.
+    lv_obj_set_size(s_scanningPhoto, width, height);
+
+    // 2026-09-06 (vartotojo pastaba: "akys dabar virsutine puse, apacioje
+    // uzrasas, bet foto turi tilpti") — akys (eye_renderer.cpp EYE_Y_OFFSET=
+    // -100, BROW_Y_OFFSET dar auksciau) uzima TIK virsutine ekrano dali
+    // (madaug y=90-170 sitam 320x480 ekranui), o busenos tekstas — pacioje
+    // apacioje. Nuotrauka nuleidziama i LAISVA tarpa TARP akiu ir teksto
+    // (y offset +70 nuo centro).
+    lv_obj_align(s_scanningPhoto, LV_ALIGN_CENTER, 0, 70);
+    lv_obj_clear_flag(s_scanningPhoto, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_scanningPhoto);
+    lv_obj_move_foreground(s_scanningLabel);
 }
 
 // v1: RECOGNIZED ekranas vaikams — TIK pasisveikinimas, be jokio touch

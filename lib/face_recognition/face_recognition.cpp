@@ -4,6 +4,8 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <esp_camera.h>
+#include <esp_heap_caps.h>
+#include <string.h>
 #include <ArduinoJson.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -11,6 +13,14 @@
 
 static bool s_debugActive = false;
 static RecognizedPerson s_debugForced = PERSON_UNKNOWN;
+
+// 2026-09-06: paskutinio nufotografuoto (atpazinimui siunciamo) kadro RAM
+// kopija — zr. FaceRecognition_GetLastFrame() komentara header'yje.
+static uint8_t *s_lastFrameBuf = nullptr;
+static size_t s_lastFrameLen = 0;
+static uint16_t s_lastFrameW = 0;
+static uint16_t s_lastFrameH = 0;
+static volatile bool s_lastFrameReady = false;
 
 // Vardas (serverio JSON "name") -> RecognizedPerson, remiantis TIK esamais
 // family_profiles.cpp displayName ("Svecias" praleidziamas — PERSON_UNKNOWN
@@ -39,6 +49,25 @@ RecognizedPerson FaceRecognition_Identify() {
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb == nullptr) return PERSON_UNKNOWN;
+
+    // Kopija RAM (PSRAM) buferyje UI puse PRIES siunciant — kad vartotojas
+    // matytu TIKSLIAI ta pati kadra, kuris iskart po sito siunciamas
+    // atpazinimo serveriui (zr. FaceRecognition_GetLastFrame()).
+    s_lastFrameReady = false;
+    uint8_t *frameCopy = (uint8_t *)heap_caps_malloc(fb->len, MALLOC_CAP_SPIRAM);
+    if (frameCopy) {
+        memcpy(frameCopy, fb->buf, fb->len);
+        if (s_lastFrameBuf) heap_caps_free(s_lastFrameBuf);
+        s_lastFrameBuf = frameCopy;
+        s_lastFrameLen = fb->len;
+        s_lastFrameW = fb->width;
+        s_lastFrameH = fb->height;
+        s_lastFrameReady = true;
+        Serial.printf("[FaceRecognition] Kadras nukopijuotas UI rodymui: %ux%u, %u baitu\n",
+                      fb->width, fb->height, (unsigned)fb->len);
+    } else {
+        Serial.println("[FaceRecognition] DIAG: nepavyko isskirti PSRAM buferio UI kadro kopijai.");
+    }
 
     HTTPClient http;
     // Diagnostika 2026-09-03: A/B testas parode, kad telefono ATPAZINIMAS
@@ -126,6 +155,15 @@ bool FaceRecognition_IsBusy() {
 
 RecognizedPerson FaceRecognition_GetResult() {
     return s_asyncResult;
+}
+
+bool FaceRecognition_GetLastFrame(const uint8_t **data, size_t *len, uint16_t *w, uint16_t *h) {
+    if (!s_lastFrameReady || !s_lastFrameBuf) return false;
+    *data = s_lastFrameBuf;
+    *len = s_lastFrameLen;
+    *w = s_lastFrameW;
+    *h = s_lastFrameH;
+    return true;
 }
 
 void FaceRecognition_DebugForce(RecognizedPerson person) {

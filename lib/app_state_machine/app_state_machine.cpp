@@ -4,6 +4,17 @@
 #include "lcd_st7796.h"
 #include "eye_renderer.h"
 #include <lvgl.h>
+#include <esp_heap_caps.h>
+
+// 2026-09-06: JPEG->maza RGB888 dekodavimas (lv_tjpgd.c naujas viesas
+// funkcija) — zr. ui_screens.h UI_ScanningShowPhoto() komentara del
+// priezasties, kodel LVGL incremental TJpgDec+scale kelias nenaudojamas.
+extern "C" bool lv_tjpgd_decode_thumbnail(const uint8_t *jpegData, size_t jpegLen,
+                                           uint16_t targetW, uint16_t targetH,
+                                           uint8_t *outBuf, size_t outBufSize);
+static uint8_t *s_scanThumbBuf = nullptr;
+static const uint16_t SCAN_THUMB_W = 240;
+static const uint16_t SCAN_THUMB_H = 180;
 
 static AppState s_state = APP_STATE_STANDBY;
 static uint32_t s_lastMotionMs = 0;
@@ -181,7 +192,44 @@ static void onWakeSequenceDone() {
     s_recognizeStartMs = millis();
     s_lastStatusUpdateMs = s_recognizeStartMs;
     UI_SetScanningStatusText("Atpažįstama... (0s)");
-    EyeRenderer_PlayRecognizingLoop();
+
+    // 2026-09-06 (vartotojo pastaba: "noriu, kad kai vyksta atpažinimas,
+    // žmogus jau matytų savo foto, kurią bandoma atpažinti") — kadras
+    // paprastai jau nufotografuotas siuo momentu (FaceRecognition_
+    // IdentifyAsync() task'as paima ji per keliolika ms nuo starto, o mes
+    // ka tik palaukeme CAMERA_FLASH_MS=600ms). Jei kazkodel dar neparuostas
+    // (labai letas task startas), NEBLOKUOJAME — tiesiog paliekame senaji
+    // aki animacija kaip atsargini variantą.
+    //
+    // JPEG (800x600 SVGA) dekoduojamas PATYS i maza RGB888 miniaturia CIA
+    // (main loop/core 1, 20KB stack — saugu), NE per LVGL/TJpgDec incremental
+    // kelia (žr. ui_screens.h/lv_tjpgd.c komentarus del ilgos diagnostikos su
+    // ChatGPT, kuri rado realu LVGL+scale+TJpgDec nesuderinamuma dideliems
+    // vaizdams).
+    const uint8_t *frameData = nullptr;
+    size_t frameLen = 0;
+    uint16_t frameW = 0, frameH = 0;
+    bool photoShown = false;
+    if (FaceRecognition_GetLastFrame(&frameData, &frameLen, &frameW, &frameH)) {
+        if (!s_scanThumbBuf) {
+            s_scanThumbBuf = (uint8_t *)heap_caps_malloc((size_t)SCAN_THUMB_W * SCAN_THUMB_H * 3, MALLOC_CAP_SPIRAM);
+        }
+        if (s_scanThumbBuf &&
+            lv_tjpgd_decode_thumbnail(frameData, frameLen, SCAN_THUMB_W, SCAN_THUMB_H,
+                                       s_scanThumbBuf, (size_t)SCAN_THUMB_W * SCAN_THUMB_H * 3)) {
+            Serial.printf("[AppState] Miniatiura dekoduota (%ux%u is %ux%u) — rodoma nuotrauka.\n",
+                          SCAN_THUMB_W, SCAN_THUMB_H, frameW, frameH);
+            UI_ScanningShowPhoto(s_scanThumbBuf, SCAN_THUMB_W, SCAN_THUMB_H);
+            photoShown = true;
+        } else {
+            Serial.println("[AppState] Miniaturos dekodavimas NEPAVYKO — atsarginis variantas (akys).");
+        }
+    } else {
+        Serial.println("[AppState] Kadras UI rodymui DAR NEGATAS — atsarginis variantas (akys).");
+    }
+    if (!photoShown) {
+        EyeRenderer_PlayRecognizingLoop();
+    }
     s_captureStarted = true;
 }
 

@@ -32,6 +32,17 @@ void FaceRecognition_IdentifyAsync();
 bool FaceRecognition_IsBusy();
 RecognizedPerson FaceRecognition_GetResult();
 
+// 2026-09-06 (vartotojo pastaba: "noriu, kad kai vyksta atpažinimas, žmogus
+// jau matytų savo foto, kurią bandoma atpažinti") — grazina TRUE ir uzpildo
+// *data/*len/*w/*h, jei paskutinio (asinchroninio) bandymo kadras jau
+// nufotografuotas ir nukopijuotas i PSRAM buferi (net jei pats atpazinimas
+// HTTP serveryje dar vyksta fone) — UI puse gali IS KARTO parodyti "ka
+// bandome atpazinti", nelaukiant serverio atsakymo. Buferis (nuosavybe
+// siame module) islieka galiojantis, kol JI PAKEICIA sekantis bandymas —
+// ta pati saugaus-RAM-buferio idioma kaip main.cpp Photo_DownloadFromPhone()
+// (LV_USE_FS_MEMFS, zr. lv_conf.h — jokio flash skaitymo rodymo metu).
+bool FaceRecognition_GetLastFrame(const uint8_t **data, size_t *len, uint16_t *w, uint16_t *h);
+
 // TESTAVIMUI/FALLBACK: rankiniu budu "priverstinai" nustato atpazinta asmeni,
 // aplenkiant realu serverio kvietima. Naudinga UI/state machine derinimui
 // arba kaip atsarginis variantas, jei serveris laikinai nepasiekiamas.

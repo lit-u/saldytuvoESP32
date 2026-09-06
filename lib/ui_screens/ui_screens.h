@@ -23,6 +23,19 @@ void UI_ShowScanning();                              // "aptiktas judesys, atpaz
 // pradzioje (WAKE seka / fotografavimas / atpazinimo laukimas).
 void UI_SetScanningStatusText(const char *text);
 
+// 2026-09-06 (vartotojo pastaba: "noriu, kad kai vyksta atpažinimas, žmogus
+// jau matytų savo foto, kurią bandoma atpažinti") — parodo TIKSLIAI ta
+// kadra, kuris siunciamas atpazinimo serveriui (zr. FaceRecognition_
+// GetLastFrame()), PER VISA SCANNING ekrana. `rgb888Data` — JAU DEKODUOTAS
+// (NE JPEG) RGB888 buferis TIKSLIAI width x height dydzio (žr.
+// app_state_machine.cpp, kuris naudoja lv_tjpgd_decode_thumbnail() JPEG
+// dekodavimui PRIES sia funkcija kviesdamas — po ilgos diagnostikos su
+// ChatGPT nustatyta, kad LVGL incremental TJpgDec+scale kelias turi realu
+// bug'a dideliems vaizdams, zr. lv_tjpgd.c komentara). Buferis PRIVALO
+// islikti galiojantis, kol ekranas rodomas. Kviesti is app_state_machine.cpp
+// onWakeSequenceDone() KAI TIK miniatiūra paruosta.
+void UI_ScanningShowPhoto(const uint8_t *rgb888Data, uint16_t width, uint16_t height);
+
 // "Kas tu?" ekranas — vartotojo pastaba 2026-09-05: jei kamera NEpazino,
 // vietoj tiesiog "Nepazinau" rodomi 5 lieciami mygtukai (visi seimos
 // nariai), kad bet kas galetu pats pasirinkti savo varda. `onPersonSelected`
