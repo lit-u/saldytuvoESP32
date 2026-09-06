@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 /**
  * Embedded HTTP serveris telefone — ESP32 POST'ina JPEG kadra i /recognize,
@@ -14,6 +15,13 @@ import java.io.ByteArrayOutputStream
  *
  * /enroll?name=<Vardas> — POST JPEG, uzregistruoja veida su tuo vardu.
  * /health — GET, paprastas gyvybes patikrinimas.
+ *
+ * 2026-09-06 (vartotojo pastaba: "noriu papildomai pridėti serverio - P10
+ * saugyklą") — /store?person=N: balso zinuciu saugojimas telefono atmintyje
+ * (40GB) vietoj ESP32 LittleFS (~3.4MB) — tas pats principas kaip veidu
+ * atpazinimas, tik audio bytu, ne JPEG. ESP32 puse (audio_output.cpp
+ * Audio_UploadToPhone/Audio_DownloadFromPhone) LittleFS naudoja TIK kaip
+ * laikina buferi irasant/grojant, telefonas — nuolatine saugykla.
  */
 class RecognitionServer(
     port: Int,
@@ -21,6 +29,7 @@ class RecognitionServer(
     private val faceEmbedder: FaceEmbedder,
     private val embeddingStore: EmbeddingStore,
     private val distanceThreshold: Float,
+    private val storageDir: File,
     private val onLog: (String) -> Unit
 ) : NanoHTTPD(port) {
 
@@ -39,12 +48,103 @@ class RecognitionServer(
                 session.method == Method.POST && session.uri == "/enroll" ->
                     handleEnroll(session)
 
+                session.method == Method.POST && session.uri == "/store" ->
+                    handleStoreUpload(session)
+
+                session.method == Method.GET && session.uri == "/store" ->
+                    handleStoreDownload(session)
+
+                session.method == Method.POST && session.uri == "/photo" ->
+                    handlePhotoUpload(session)
+
+                session.method == Method.GET && session.uri == "/photo" ->
+                    handlePhotoDownload()
+
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
             }
         } catch (e: Exception) {
             onLog("KLAIDA: ${e.message}")
             jsonResponse(JSONObject().put("name", "unknown").put("error", e.message ?: "unknown"))
         }
+    }
+
+    // 2026-09-06: balso zinutes failo issaugojimas — RAW binarinis POST body
+    // (ta pati konvencija kaip ESP32 admin panele /admin/audio), issaugoma
+    // "audio_<person>.wav" storageDir kataloge (app privati atmintis
+    // /data/data/lt.saldytuvas.recognizer/files/, NEREIKIA jokio atskiro
+    // WRITE_EXTERNAL_STORAGE leidimo).
+    private fun handleStoreUpload(session: IHTTPSession): Response {
+        val person = session.parms["person"]?.toIntOrNull()
+        if (person == null || person <= 0) {
+            return jsonResponse(JSONObject().put("ok", false).put("error", "trukstu 'person' parametro"))
+        }
+        val contentLength = session.headers["content-length"]?.toIntOrNull()
+        if (contentLength == null) {
+            return jsonResponse(JSONObject().put("ok", false).put("error", "trukstu Content-Length"))
+        }
+        val file = File(storageDir, "audio_$person.wav")
+        val input = session.inputStream
+        val chunk = ByteArray(8192)
+        var remaining = contentLength
+        file.outputStream().use { out ->
+            while (remaining > 0) {
+                val read = input.read(chunk, 0, minOf(chunk.size, remaining))
+                if (read == -1) break
+                out.write(chunk, 0, read)
+                remaining -= read
+            }
+        }
+        onLog("Balso zinute issaugota: ${file.name} (${file.length()} baitu)")
+        return jsonResponse(JSONObject().put("ok", true).put("bytes", file.length()))
+    }
+
+    // 2026-09-06: balso zinutes failo atsiuntimas — RAW binarinis atsakymas
+    // (application/octet-stream), 404 jei nera irasytos zinutes tam zmogui.
+    private fun handleStoreDownload(session: IHTTPSession): Response {
+        val person = session.parms["person"]?.toIntOrNull()
+        if (person == null || person <= 0) {
+            return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "trukstu 'person' parametro")
+        }
+        val file = File(storageDir, "audio_$person.wav")
+        if (!file.exists()) {
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "nera irasytos zinutes")
+        }
+        return newFixedLengthResponse(
+            Response.Status.OK, "application/octet-stream", file.inputStream(), file.length()
+        )
+    }
+
+    // 2026-09-06 (vartotojo pastaba: "būtinai padarome ir fotografavimo per
+    // esp funkciją ir rodymo iš P10 - 3.5 ekrane") — ESP32 fotografuoja,
+    // POST'ina JPEG cia (ta pati raw-body logika kaip /store), telefonas
+    // laiko VIENA "naujausia" nuotrauka (paprasciausias MVP — ne galerija).
+    private fun handlePhotoUpload(session: IHTTPSession): Response {
+        val contentLength = session.headers["content-length"]?.toIntOrNull()
+        if (contentLength == null) {
+            return jsonResponse(JSONObject().put("ok", false).put("error", "trukstu Content-Length"))
+        }
+        val file = File(storageDir.parentFile, "photo_latest.jpg")
+        val input = session.inputStream
+        val chunk = ByteArray(8192)
+        var remaining = contentLength
+        file.outputStream().use { out ->
+            while (remaining > 0) {
+                val read = input.read(chunk, 0, minOf(chunk.size, remaining))
+                if (read == -1) break
+                out.write(chunk, 0, read)
+                remaining -= read
+            }
+        }
+        onLog("Nuotrauka issaugota: ${file.length()} baitu")
+        return jsonResponse(JSONObject().put("ok", true).put("bytes", file.length()))
+    }
+
+    private fun handlePhotoDownload(): Response {
+        val file = File(storageDir.parentFile, "photo_latest.jpg")
+        if (!file.exists()) {
+            return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "nera nuotraukos")
+        }
+        return newFixedLengthResponse(Response.Status.OK, "image/jpeg", file.inputStream(), file.length())
     }
 
     private fun handleRecognize(session: IHTTPSession): Response {

@@ -366,7 +366,16 @@
  *-----------*/
 
 /** Enable log module */
-#define LV_USE_LOG 0
+// 2026-09-06: LAIKINAI buvo ijungta TRACE lygiu nuotraukos rodymo
+// diagnostikai (P10 3.5 ekranas) — PASALINTA, nes TRACE lygio Serial
+// spausdinimas (KIEKVIENAM vidiniam LVGL veiksmui) drastiskai sulėtino
+// visa UI (vartotojo pastaba: "veikia, bet daug karto leciau" po sio
+// pakeitimo). Grazinta i isjungta busena kaip buvo pries siandiena.
+// 2026-09-06: laikinai vel [ijungta TIK WARN lygiu (NE TRACE), kad
+// pagautume TJpgDec/lv_fs klaidas ("jd_prepare error", "File open
+// failed" ir pan.) nuotraukos rodymo diagnostikai, be TRACE lygio
+// pastebeto lėtėjimo rizikos.
+#define LV_USE_LOG 1
 #if LV_USE_LOG
     /** Set value to one of the following levels of logging detail:
      *  - LV_LOG_LEVEL_TRACE    Log detailed information.
@@ -843,10 +852,17 @@
 #define LV_FS_DEFAULT_DRIVER_LETTER '\0'
 
 /** API for fopen, fread, etc. */
-#define LV_USE_FS_STDIO 0
+// 2026-09-06 (vartotojo pastaba: "rodymo iš P10 3.5 ekrane") — ijungta,
+// kad TJpgDec (žr. LV_USE_TJPGD virs) galetu skaityti JPEG failus
+// TIESIOGIAI is LittleFS (Arduino LittleFS visada montuoja i "/littlefs"
+// ESP-IDF VFS, standartinis fopen() jau veikia be papildomo draiverio —
+// zr. anksciau siame projekte pastebeta klaida "open(): /littlefs/
+// audio_2.wav does not exist", patvirtinanti si mount taska). Raide "S"
+// (Screen/Storage) — nuoroda LVGL puseje: "S:photo_latest.jpg".
+#define LV_USE_FS_STDIO 1
 #if LV_USE_FS_STDIO
-    #define LV_FS_STDIO_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
-    #define LV_FS_STDIO_PATH ""         /**< Set the working directory. File/directory paths will be appended to it. */
+    #define LV_FS_STDIO_LETTER 'S'      /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
+    #define LV_FS_STDIO_PATH "/littlefs" /**< Set the working directory. File/directory paths will be appended to it. */
     #define LV_FS_STDIO_CACHE_SIZE 0    /**< >0 to cache this number of bytes in lv_fs_read() */
 #endif
 
@@ -875,9 +891,25 @@
 #endif
 
 /** API for memory-mapped file access. */
-#define LV_USE_FS_MEMFS 0
+// 2026-09-06: LV_USE_FS_STDIO (virs) determinuotai KRISDAVO "Guru Meditation
+// Error: Double exception" (EXCCAUSE=2 InstructionFetchError) TIKSLIAI ties
+// fs_read->esp_partition_read, kai TJpgDec bandydavo skaityti "S:/photo_
+// latest.jpg" is LittleFS. Diagnostika (serial_log_photo_diag.txt) irode:
+// (1) identiskas PC/adresas 4 kartus is eiles, nepriklausomai nuo nuotraukos
+//     dydzio (800x600 IR teisingo 320x240) — ne atminties dydzio klausimas;
+// (2) identiskas net padidinus loop() task stack 8KB->32KB — ne stack
+//     overflow;
+// (3) TAS PATS failas saugiai perskaitomas GRYNU Arduino LittleFS API
+//     (File::read()) IS KARTO PO to paties Photo_DownloadFromPhone() rasymo
+//     — klaida izoliuota BUTENT i lv_fs_stdio.c fopen()/fread() (newlib VFS
+//     -> esp_littlefs -> esp_partition_read) kelia, ne i pati LittleFS/flash.
+// FIX: nuotraukos rodymui naudojame LV_USE_FS_MEMFS (grynas RAM buferis,
+// JOKIO flash skaitymo dekodavimo metu) — main.cpp Photo_DownloadFromPhone()
+// perskaito faila i PSRAM buferi per Arduino LittleFS API (jau irodyta
+// saugu), o ui_screens.cpp UI_ShowPhoto() rodo ji per LV_IMAGE_SRC_VARIABLE.
+#define LV_USE_FS_MEMFS 1
 #if LV_USE_FS_MEMFS
-    #define LV_FS_MEMFS_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
+    #define LV_FS_MEMFS_LETTER 'M'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
 #endif
 
 /** API for LittleFs. */
@@ -918,7 +950,12 @@
 
 /** JPG + split JPG decoder library.
  *  Split JPG is a custom format optimized for embedded systems. */
-#define LV_USE_TJPGD 0
+// 2026-09-06 (vartotojo pastaba: "būtinai padarome... rodymo iš P10 3.5
+// ekrane") — ijungta, kad butu galima rodyti kameros/telefono JPEG
+// nuotraukas LVGL ekrane (lv_img + sis dekoderis). Sriftu bug'as
+// (LV_USE_FONT_COMPRESSED 0, zr. lv_fonts_lt.h) SIO NELIECIA — tai
+// atskiras, nesusijes dekoderiu registras.
+#define LV_USE_TJPGD 1
 
 /** libjpeg-turbo decoder library.
  *  - Supports complete JPEG specifications and high-performance JPEG decoding. */

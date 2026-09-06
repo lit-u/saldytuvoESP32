@@ -59,3 +59,13 @@ bool Audio_PlayFile(const char *path);
 // 2026-09-05: "1 sek sustoja, nera stop. Gal padaryti?" — admin puslapio
 // "Stop" mygtukas).
 bool Audio_RecordToFile(const char *path, uint32_t durationMs, volatile bool *stopRequested = nullptr);
+
+// 2026-09-06 (vartotojo pastaba: "noriu papildomai pridėti serverio - P10
+// saugyklą") — balso zinuciu ISKELIMAS/PARSISIUNTIMAS is P10 telefono
+// (android-server/.../RecognitionServer.kt /store), kuris turi 40GB vietos,
+// vietoj ESP32 LittleFS (~3.4MB). LittleFS lieka kaip LAIKINAS buferis
+// irasant/grojant — SIOS funkcijos sinchronizuoja ji su telefonu.
+// BLOKUOJANCIOS (HTTP kvietimas) — kviesti is pagrindinio loop(), ne is
+// AsyncWebServer callback'o (ta pati priezastis kaip /testsound).
+bool Audio_UploadToPhone(int person);
+bool Audio_DownloadFromPhone(int person);

@@ -50,3 +50,13 @@ void UI_ShowAdultGreeting(const PersonProfile &p);   // 4b. suaugusiojo ekranas
 // zr. app_state_machine.cpp onWakeSequenceDone().
 void UI_ShowCameraFlashOn();
 void UI_ShowCameraFlashOff();
+
+// 2026-09-06 (vartotojo pastaba: "rodymo iš P10 - 3.5 ekrane") — rodo P10
+// telefono atsiusta JPEG per lv_image widget. `jpegData` — RAM buferis
+// (main.cpp Photo_DownloadFromPhone(), PSRAM), NE failo kelias — LVGL
+// LV_USE_FS_STDIO failinis skaitymas is LittleFS determinuotai sukeldavo
+// "Guru Meditation Error: Double exception" (zr. lv_conf.h komentara del
+// LV_USE_FS_MEMFS). Buferis PRIVALO islikti galiojantis, kol ekranas
+// rodomas — nuosavybe islieka main.cpp puseje (nekeiciama/neatlaisvinama,
+// kol nera naujos nuotraukos). Kviesti PO sekmingo download.
+void UI_ShowPhoto(const uint8_t *jpegData, size_t jpegLen, uint16_t width, uint16_t height);

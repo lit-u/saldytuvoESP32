@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import java.io.File
 
 /**
  * Foreground service — laiko RecognitionServer gyva net kai app fone/ekranas
@@ -30,12 +31,17 @@ class RecognitionForegroundService : Service() {
             val store = EmbeddingStore(this)
             val cropper = FaceCropper()
             val embedder = FaceEmbedder(this)
+            // 2026-09-06: balso zinuciu saugykla — app privati atmintis
+            // (filesDir), NEREIKIA jokio atskiro leidimo. Sukuriama, jei
+            // dar neegzistuoja.
+            val audioDir = File(filesDir, "audio").apply { mkdirs() }
             server = RecognitionServer(
                 port = PORT,
                 faceCropper = cropper,
                 faceEmbedder = embedder,
                 embeddingStore = store,
-                distanceThreshold = DISTANCE_THRESHOLD
+                distanceThreshold = DISTANCE_THRESHOLD,
+                storageDir = audioDir
             ) { msg -> RecognitionLog.append(msg) }
             server?.start()
             RecognitionLog.append("Serveris paleistas, portas $PORT")

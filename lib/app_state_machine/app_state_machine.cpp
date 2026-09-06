@@ -28,6 +28,9 @@ static const uint32_t PICKING_TIMEOUT_MS = 20000;
 // reiskia "kiek laiko rodyti ekrana po pasisveikinimo pries miegant".
 // Koreguoti kai turesim realu energijos biudzeta is fizinio testo.
 static const uint32_t SCREEN_AWAKE_TIMEOUT_MS = 15000;
+// Nuotraukos rodymui (APP_STATE_SHOWING_PHOTO) — zr. komentara ties sios
+// busenos update() sakiu del priezasties, kodel ilgesnis nei GREETING.
+static const uint32_t PHOTO_AWAKE_TIMEOUT_MS = 60000;
 // Saugumo riba SCANNING busenai (2026-09-04, po perejimo i asinchronini
 // atpazinima) — TIK apsauga, jei FreeRTOS task'as kazkodel niekada
 // nebaigtu (paciam HTTP kvietimui jau yra savas 40s timeout'as viduje,
@@ -296,9 +299,36 @@ void AppStateMachine_Update(bool motionDetected) {
                 enterStandby();
             }
             break;
+
+        case APP_STATE_SHOWING_PHOTO:
+            // 2026-09-06: IS PRADZIU naudojo ta pati SCREEN_AWAKE_TIMEOUT_MS
+            // (15s) kaip GREETING — testuojant nuotolinio P10 nuotraukos
+            // kelio (kartais 60-90s uzsitesiantis ESP<->telefonas HTTP
+            // round-trip per lete WiFi jungti), vartotojas nespedavo net
+            // pribegti pazuret i ekrana, kol jis JAU buvo isjunges — atrode
+            // kaip "nuotrauka neveikia", nors is tikruju viskas nusisiunte
+            // ir parodyta korektiskai. FIX: ilgesnis, atskiras timeout SIAI
+            // busenai (nuotrauka NE toks daznas veiksmas kaip GREETING, tad
+            // energijos kaina priimtina).
+            if (!motionDetected && (millis() - s_lastMotionMs > PHOTO_AWAKE_TIMEOUT_MS)) {
+                enterStandby();
+            }
+            break;
     }
 }
 
 AppState AppStateMachine_GetState() {
     return s_state;
+}
+
+// 2026-09-06 (vartotojo pastaba: "gali trukdyti musu saldytuvo esp-32
+// programa. Isijungia, o veliau uzgesta. Gal reikia ta nuotraukos rodyma
+// integruoti i saldytuvo esp?") — zr. app_state_machine.h pastaba del
+// pirmo (nepavykusio) bandymo.
+void AppStateMachine_ShowPhoto(const uint8_t *jpegData, size_t jpegLen, uint16_t width, uint16_t height) {
+    EyeRenderer_StopSequence();
+    LCD_Backlight_Set(100);
+    UI_ShowPhoto(jpegData, jpegLen, width, height);
+    s_lastMotionMs = millis();  // pakartotinai naudoja SCREEN_AWAKE_TIMEOUT_MS
+    s_state = APP_STATE_SHOWING_PHOTO;
 }

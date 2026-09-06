@@ -13,6 +13,7 @@ static lv_obj_t *s_scrChild = nullptr;
 static lv_obj_t *s_scrAdult = nullptr;
 static lv_obj_t *s_scrPicker = nullptr;
 static lv_obj_t *s_scrPublic = nullptr;
+static lv_obj_t *s_scrPhoto = nullptr;   // 2026-09-06: nuotraukos is P10 rodymui (zr. UI_ShowPhoto)
 static lv_obj_t *s_flashOverlay = nullptr;
 static lv_obj_t *s_scanningLabel = nullptr;
 static void (*s_onPersonSelected)(RecognizedPerson) = nullptr;
@@ -196,6 +197,9 @@ void UI_Screens_Init(void (*onMenuPressed)()) {
     s_scrChild = lv_obj_create(NULL);
     s_scrAdult = lv_obj_create(NULL);
     s_scrPublic = lv_obj_create(NULL);  // "viesas" profilis (zr. UI_ShowPublicGreeting) — tuscia "drobe"
+    s_scrPhoto = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scrPhoto, lv_color_black(), 0);
+    createMenuButton(s_scrPhoto);
 
     // "Kas tu?" ekranas (vartotojo pastaba 2026-09-05) — TURINYS STATINIS
     // (visada tie patys 5 seimos nariai), tad sukuriamas VIENA KARTA cia,
@@ -409,4 +413,36 @@ void UI_ShowCameraFlashOff() {
     lv_obj_delete(s_flashOverlay);
     s_flashOverlay = nullptr;
     lv_timer_handler();
+}
+
+// 2026-09-06 (vartotojo pastaba: "būtinai padarome ir fotografavimo per
+// esp funkciją ir rodymo iš P10 - 3.5 ekrane") — rodo LittleFS irasyta
+// JPEG faila ("/photo_latest.jpg", atsiustas is P10, zr. main.cpp
+// Photo_DownloadFromPhone()) per lv_image + TJpgDec dekoderi. Naudoja
+// 2026-09-06: pirmas bandymas (LV_USE_FS_STDIO, "S:/photo_latest.jpg" is
+// LittleFS) determinuotai kildavo "Guru Meditation Error: Double exception"
+// TIKSLIAI ties LVGL fopen()/fread() (newlib VFS -> esp_littlefs ->
+// esp_partition_read) — zr. lv_conf.h komentara. Dabar naudojame
+// LV_USE_FS_MEMFS: nuotrauka jau RAM buferyje (main.cpp Photo_
+// DownloadFromPhone(), PSRAM), rodoma per LV_IMAGE_SRC_VARIABLE — JOKIO
+// flash skaitymo dekodavimo metu.
+static lv_image_dsc_t s_photoDsc;
+
+void UI_ShowPhoto(const uint8_t *jpegData, size_t jpegLen, uint16_t width, uint16_t height) {
+    lv_obj_clean(s_scrPhoto);
+    createMenuButton(s_scrPhoto);
+
+    lv_memset(&s_photoDsc, 0, sizeof(s_photoDsc));
+    s_photoDsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_photoDsc.header.cf = LV_COLOR_FORMAT_RAW;
+    s_photoDsc.header.w = width;
+    s_photoDsc.header.h = height;
+    s_photoDsc.data_size = jpegLen;
+    s_photoDsc.data = jpegData;
+
+    lv_obj_t *img = lv_image_create(s_scrPhoto);
+    lv_image_set_src(img, &s_photoDsc);
+    lv_obj_center(img);
+
+    lv_screen_load_anim(s_scrPhoto, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);
 }

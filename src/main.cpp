@@ -24,6 +24,8 @@
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <esp_camera.h>
+#include <esp_heap_caps.h>
+#include <HTTPClient.h>
 #include <ESPAsyncWebServer.h>
 #include <lvgl.h>
 
@@ -321,6 +323,134 @@ bool initCamera() {
     return true;
 }
 
+// 2026-09-06 (vartotojo pastaba: "būtinai padarome ir fotografavimo per
+// esp funkciją ir rodymo iš P10 - 3.5 ekrane") — nufotografuoja DABAR IR
+// issiuncia i P10 telefona (android-server/.../RecognitionServer.kt
+// /photo). BLOKUOJANTIS (HTTP kvietimas) — kviesti IS pagrindinio loop(),
+// NE is AsyncWebServer callback'o (ta pati priezastis kaip /testsound/OTA).
+bool Photo_CaptureAndUpload() {
+    // KLAIDA rasta 2026-09-06 (ekranas tuscias/juodas, be crash/reboot) —
+    // numatytasis FRAMESIZE_SVGA (800x600, zr. initCamera()) skirtas veido
+    // atpazinimui, BET LCD ekranas TIK 320x480 (zr. lcd_st7796.h), o LVGL
+    // JPEG dekodavimo buferis (TJpgDec, RGB isvestis) numatytajam
+    // paskirstymui NEKREIPIA demesio i PSRAM — 800x600x3=1.44MB bandymas
+    // israsyti IS VIDINES SRAM (kurios TIK ~300KB is viso) TYLIAI PAKIMBA
+    // pagrindine loop() uzduoti (be watchdog gaudymo — AsyncWebServer, kita
+    // FreeRTOS uzduotis, toliau atsakinejo, klaidingai atrodant, kad
+    // "irenginys gyvas"). FIX: laikinai sumazinamas kadro dydis TIK sitam
+    // fotografavimui (atstatoma po to, kad neuztektu veido atpazinimo
+    // tikslumo).
+    Serial.println("[Photo] Capture: pradzia");
+    Serial.flush();
+    sensor_t *sensor = esp_camera_sensor_get();
+    framesize_t originalSize = sensor ? (framesize_t)sensor->status.framesize : FRAMESIZE_SVGA;
+    if (sensor) sensor->set_framesize(sensor, FRAMESIZE_QVGA);  // 320x240
+    Serial.printf("[Photo] Capture: framesize pakeistas (originalus=%d)\n", (int)originalSize);
+    Serial.flush();
+
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("[Photo] KLAIDA: nepavyko paimti kadro.");
+        Serial.flush();
+        if (sensor) sensor->set_framesize(sensor, originalSize);
+        return false;
+    }
+    Serial.printf("[Photo] Capture: kadras paimtas %ux%u, %u baitu\n", fb->width, fb->height, (unsigned)fb->len);
+    Serial.flush();
+    HTTPClient http;
+    http.begin(SECRET_SERVER_PHOTO_URL);
+    http.addHeader("Content-Type", "image/jpeg");
+    int httpCode = http.POST(fb->buf, fb->len);
+    Serial.printf("[Photo] Upload i telefona (%ux%u, %u baitu): HTTP %d\n",
+                  fb->width, fb->height, (unsigned)fb->len, httpCode);
+    Serial.flush();
+    esp_camera_fb_return(fb);
+    http.end();
+
+    if (sensor) sensor->set_framesize(sensor, originalSize);
+    return httpCode == HTTP_CODE_OK;
+}
+
+// 2026-09-06: paskutines atsisiustos nuotraukos RAM buferis (PSRAM) —
+// UI_ShowPhoto() rodo TIESIAI is sito buferio per LVGL LV_USE_FS_MEMFS
+// (LV_IMAGE_SRC_VARIABLE), NE is LittleFS failo. Priezastis: LV_USE_FS_STDIO
+// (fopen/fread->esp_littlefs->esp_partition_read) determinuotai sukeldavo
+// "Guru Meditation Error: Double exception" skaitant nuotrauka is LittleFS
+// TIK per si LVGL/newlib kelia (grynas Arduino LittleFS File API skaitymas
+// TOS PACIOS nuotraukos veike be problemu — patikrinta atskiru testu). Zr.
+// lv_conf.h komentara del pilnos diagnostikos. Buferis islieka galiojantis
+// tarp iskvietimu (nuosavybe cia, main.cpp puseje) — atlaisvinamas/pakeiciamas
+// TIK kai atsisiunciama NAUJA nuotrauka.
+static uint8_t *s_photoRamBuf = nullptr;
+static size_t s_photoRamLen = 0;
+static uint16_t s_photoRamW = 0;
+static uint16_t s_photoRamH = 0;
+
+// DIAGNOSTIKA 2026-09-06: is pradziu bandeme isskaityti plotį/aukšti is
+// paties JPEG SOF0 zymeklio (0xFFC0) baitu. Rezultatas: kamera (OV5640,
+// po runtime set_framesize(QVGA) Photo_CaptureAndUpload()) grazina fb->
+// width/height=320x240 (patikimas, TIESIOGINIS driverio laukas), BET pats
+// UZKODUOTAS JPEG SOF0 baitų sraute vis tiek nurodo SENA 800x600 (matyt,
+// OV5640 JPEG koderio aparatinis blokas ismano naujo dydzio nesinchronizuoja
+// su SOF antraste iskart po runtime framesize pakeitimo — zinoma esp32-
+// camera/OV5640 keistenybe, ne musu kodo klaida). Todel SOF baitais
+// PASITIKETI NEGALIMA. FIX: naudojame ZINOMA, PASTOVIA rodymo dydi,
+// atitinkanti Photo_CaptureAndUpload() priverstinai naudojama FRAMESIZE_
+// QVGA — jei kada pakeisite ta framesize, PAKEISKITE ir sias konstantas.
+static const uint16_t PHOTO_DISPLAY_WIDTH = 320;
+static const uint16_t PHOTO_DISPLAY_HEIGHT = 240;
+
+// Atsisiuncia "naujausia" nuotrauka is P10 telefono. Issaugoma i LittleFS
+// (uzrasui/ateities panaudojimui), BET rodymui perskaitoma i PSRAM buferi
+// (s_photoRamBuf) grynu Arduino LittleFS API — zr. komentara virs.
+bool Photo_DownloadFromPhone() {
+    HTTPClient http;
+    http.begin(SECRET_SERVER_PHOTO_URL);
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("[Photo] Download is telefono: HTTP %d KLAIDA\n", httpCode);
+        http.end();
+        return false;
+    }
+    File f = LittleFS.open("/photo_latest.jpg", "w");
+    if (!f) {
+        Serial.println("[Photo] Download: nepavyko sukurti lokalaus failo.");
+        http.end();
+        return false;
+    }
+    http.writeToStream(&f);
+    f.close();
+    http.end();
+
+    File rf = LittleFS.open("/photo_latest.jpg", "r");
+    if (!rf) {
+        Serial.println("[Photo] Download: nepavyko atidaryti failo RAM buferiui.");
+        return false;
+    }
+    size_t sz = rf.size();
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
+    if (!buf) {
+        Serial.println("[Photo] Download: nepavyko isskirti PSRAM buferio.");
+        rf.close();
+        return false;
+    }
+    size_t readLen = rf.read(buf, sz);
+    rf.close();
+    if (readLen != sz) {
+        Serial.printf("[Photo] Download: perskaityta tik %u/%u baitu.\n", (unsigned)readLen, (unsigned)sz);
+        heap_caps_free(buf);
+        return false;
+    }
+    if (s_photoRamBuf) heap_caps_free(s_photoRamBuf);
+    s_photoRamBuf = buf;
+    s_photoRamLen = sz;
+    s_photoRamW = PHOTO_DISPLAY_WIDTH;
+    s_photoRamH = PHOTO_DISPLAY_HEIGHT;
+    Serial.printf("[Photo] Download is telefono: OK (%ux%u, %u baitu RAM buferyje)\n",
+                  PHOTO_DISPLAY_WIDTH, PHOTO_DISPLAY_HEIGHT, (unsigned)sz);
+    return true;
+}
+
 // LVGL touch input device read callback (FT6336 per bendra I2C magistrale).
 static void touchpadReadCb(lv_indev_t *indev, lv_indev_data_t *data) {
     TouchPoint tp = Touch_FT6336_Read();
@@ -591,6 +721,9 @@ void RequestTestSoundPlayback(int personIdx);  // apibrezta zemiau, prie loop()
 void RequestMicRecording(int personIdx);       // apibrezta zemiau, prie loop()
 void RequestMicRecordStop();                   // apibrezta zemiau, prie loop()
 const char *MicRecordGetStateStr();            // apibrezta zemiau, prie loop()
+void RequestPhotoCapture();                    // apibrezta zemiau, prie loop()
+void RequestPhotoShow();                       // apibrezta zemiau, prie loop()
+const char *PhotoActionGetStateStr();          // apibrezta zemiau, prie loop()
 
 // 2026-09-05 (vartotojo pastaba: "ok, pasw: OldBoy") — adminke dabar
 // pasiekiama IR per Tailscale is bet kur (zr. README naujausia sesija),
@@ -680,6 +813,17 @@ static String buildOwnerPage() {
     html += "<p style='margin-top:10px;'><a href='/admin/owner/snapshot' target='_blank'>📷 Peržiūrėti dabartinį kameros kadrą</a></p>";
     html += "</div>";
 
+    // 2026-09-06 (vartotojo pastaba: "būtinai padarome ir fotografavimo per
+    // esp funkciją ir rodymo iš P10 - 3.5 ekrane") — Fotografuoti čia
+    // nusiunčia kadrą į P10 (40GB saugykla), o "Rodyti ekrane" atsiunčia TĄ
+    // PAČIĄ (ar bet kurią vėliau ten įkeltą) nuotrauką atgal ir parodo
+    // fiziniame 3.5" LCD per LVGL (žr. UI_ShowPhoto()).
+    html += "<div class='card'><h3>📷 Nuotrauka (P10 saugykla)</h3>";
+    html += "<button type='button' id='photo-capture-btn' onclick='photoAction(\"capture\")'>📷 Fotografuoti ir siųsti į P10</button> ";
+    html += "<button type='button' id='photo-show-btn' onclick='photoAction(\"show\")'>🖼️ Rodyti iš P10 ekrane</button>";
+    html += "<div class='status' id='photo-status'></div>";
+    html += "</div>";
+
     // 2026-09-05 (vartotojo pastaba: "svarbu... valdyti esp-32 flashinima")
     // — OTA (Over-The-Air) firmware atnaujinimas: ikeliamas naujas .bin
     // (PlatformIO "Build" veiksmo rezultatas, .pio/build/esp32-s3-cam/
@@ -696,6 +840,26 @@ static String buildOwnerPage() {
     html += "</div>";
 
     html += "<script>"
+            "async function photoAction(action){"
+            "let status=document.getElementById('photo-status');"
+            "let capBtn=document.getElementById('photo-capture-btn');"
+            "let showBtn=document.getElementById('photo-show-btn');"
+            "capBtn.disabled=true;showBtn.disabled=true;"
+            "status.textContent=action==='capture'?'Fotografuojama...':'Siunčiama į ekraną...';"
+            "await fetch('/admin/owner/photo/'+action,{method:'POST'});"
+            "for(let tries=0;tries<30;tries++){"
+            "await new Promise(r=>setTimeout(r,300));"
+            "let r=await fetch('/admin/owner/photo/status');"
+            "let j=await r.json();"
+            "if(j.state==='done'||j.state==='error'){"
+            "capBtn.disabled=false;showBtn.disabled=false;"
+            "status.textContent=j.state==='done'?'Atlikta!':'Klaida';"
+            "return;"
+            "}"
+            "}"
+            "capBtn.disabled=false;showBtn.disabled=false;"
+            "status.textContent='Per ilgai laukta...';"
+            "}"
             "function uploadOta(){"
             "let f=document.getElementById('ota-file').files[0];"
             "if(!f){alert('Pasirink .bin faila');return;}"
@@ -818,6 +982,29 @@ void initWebServer() {
                 return toCopy;
             });
         request->send(response);
+    });
+
+    // 2026-09-06 (vartotojo pastaba: "būtinai padarome ir fotografavimo per
+    // esp funkciją ir rodymo iš P10 - 3.5 ekrane") — ta pati "atidek i
+    // loop()" schema kaip OTA/mikrofonas virs (abu veiksmai blokuoja per
+    // HTTP kvietima i telefona, negalima kviesti tiesiai is AsyncWebServer
+    // as_tcp uzduoties).
+    s_webServer.on("/admin/owner/photo/capture", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (!checkAdminAuth(request)) return;
+        RequestPhotoCapture();
+        request->send(200, "text/plain", "OK (fotografuojama fone)");
+    });
+
+    s_webServer.on("/admin/owner/photo/show", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (!checkAdminAuth(request)) return;
+        RequestPhotoShow();
+        request->send(200, "text/plain", "OK (rodoma fone)");
+    });
+
+    s_webServer.on("/admin/owner/photo/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!checkAdminAuth(request)) return;
+        String json = String("{\"state\":\"") + PhotoActionGetStateStr() + "\"}";
+        request->send(200, "application/json", json);
     });
 
     s_webServer.on("/admin/owner", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1159,6 +1346,33 @@ const char *MicRecordGetStateStr() {
     }
 }
 
+// 2026-09-06 (vartotojo pastaba: "būtinai padarome ir fotografavimo per
+// esp funkciją ir rodymo iš P10 - 3.5 ekrane") — ta pati "atidek i loop()"
+// schema kaip mikrofono irasymas/OTA virs (Photo_CaptureAndUpload() ir
+// Photo_DownloadFromPhone() abu blokuoja per HTTP kvietima).
+enum class PhotoActionState { IDLE, BUSY, DONE, ERROR };
+static volatile PhotoActionState s_photoActionState = PhotoActionState::IDLE;
+static volatile int s_pendingPhotoAction = 0;  // 0=nera, 1=capture+upload, 2=download+show
+
+void RequestPhotoCapture() {
+    s_photoActionState = PhotoActionState::BUSY;
+    s_pendingPhotoAction = 1;
+}
+
+void RequestPhotoShow() {
+    s_photoActionState = PhotoActionState::BUSY;
+    s_pendingPhotoAction = 2;
+}
+
+const char *PhotoActionGetStateStr() {
+    switch (s_photoActionState) {
+        case PhotoActionState::BUSY: return "busy";
+        case PhotoActionState::DONE: return "done";
+        case PhotoActionState::ERROR: return "error";
+        default: return "idle";
+    }
+}
+
 void loop() {
     if (s_pendingTestSoundPerson >= 0) {
         int personIdx = s_pendingTestSoundPerson;
@@ -1173,7 +1387,37 @@ void loop() {
         char path[32];
         snprintf(path, sizeof(path), "/audio_%d.wav", personIdx);
         bool ok = Audio_RecordToFile(path, MIC_RECORD_DURATION_MS, &s_micRecordStopRequested);
+        // 2026-09-06 (vartotojo pastaba: "noriu papildomai pridėti serverio
+        // - P10 saugyklą") — po sekmingo irasymo, kopija issiunciama i P10
+        // telefona (40GB) kaip atsargine kopija. Lokali LittleFS kopija
+        // LIEKA (greitas, nuo tinklo nepriklausomas grojimas per "Garsas"
+        // mygtuka) — telefonas cia PAPILDOMA, ne pakeiciancia saugykla.
+        if (ok) {
+            Audio_UploadToPhone(personIdx);
+        }
         s_micRecordState = ok ? MicRecordState::DONE : MicRecordState::ERROR;
+    }
+    if (s_pendingPhotoAction != 0) {
+        int action = s_pendingPhotoAction;
+        s_pendingPhotoAction = 0;
+        bool ok = false;
+        if (action == 1) {
+            ok = Photo_CaptureAndUpload();
+        } else if (action == 2) {
+            ok = Photo_DownloadFromPhone();
+            // KLAIDA rasta 2026-09-06 (vartotojo pastaba: "gali trukdyti
+            // musu saldytuvo esp-32 programa... gal reikia integruoti i
+            // saldytuvo esp?") — UI_ShowPhoto() TIESIOGINIS kvietimas
+            // (be app_state_machine busenos) NEVEIKE — ekranas
+            // tuscias/mirksintis, nes s_state likdavo nepakeistas, tad
+            // likusi busenu masina (backlight, meniu mygtukas) elgesi
+            // nenuosekliai. FIX: AppStateMachine_ShowPhoto() — TIKRA
+            // busena (zr. app_state_machine.h/.cpp).
+            if (ok) {
+                AppStateMachine_ShowPhoto(s_photoRamBuf, s_photoRamLen, s_photoRamW, s_photoRamH);
+            }
+        }
+        s_photoActionState = ok ? PhotoActionState::DONE : PhotoActionState::ERROR;
     }
     // Radaras pasalintas — v1 nebeturi atskiro "judesio" jutiklio; realus
     // pazadinimo saltinis dabar — fizinis PWR mygtukas (zr. readWakeButtonEdge

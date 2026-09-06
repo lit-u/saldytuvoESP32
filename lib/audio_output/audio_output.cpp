@@ -5,6 +5,8 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <driver/i2s.h>
+#include <HTTPClient.h>
+#include "secrets.h"
 
 using namespace audio_driver;
 
@@ -383,6 +385,69 @@ bool Audio_RecordToFile(const char *path, uint32_t durationMs, volatile bool *st
     f.close();
     Serial.printf("[Audio] Record: baigta — %u baitu (ADPCM), pikas=%d/32767 (%.1f%%)\n",
                   (unsigned)totalEncodedBytes, (int)peakAbs, 100.0f * peakAbs / 32767.0f);
+    Serial.flush();
+    return true;
+}
+
+// 2026-09-06 (vartotojo pastaba: "noriu papildomai pridėti serverio - P10
+// saugyklą") — LittleFS faila (jau irasyta ES7210 mikrofonu ar narsykles
+// ikelimu) POST'ina i P10 telefono /store endpoint'a (android-server/,
+// zr. RecognitionServer.kt handleStoreUpload). HTTPClient::sendRequest()
+// su Stream* siunciamas TIESIOGIAI is failo, be poreikio viska i RAM
+// ikelti is anksto.
+bool Audio_UploadToPhone(int person) {
+    char path[32];
+    snprintf(path, sizeof(path), "/audio_%d.wav", person);
+    File f = LittleFS.open(path, "r");
+    if (!f) {
+        Serial.printf("[Audio] Upload: failo nera lokaliai: %s\n", path);
+        return false;
+    }
+    size_t fileSize = f.size();
+
+    HTTPClient http;
+    String url = String(SECRET_SERVER_STORE_URL) + "?person=" + String(person);
+    http.begin(url);
+    http.addHeader("Content-Type", "application/octet-stream");
+    int httpCode = http.sendRequest("POST", &f, fileSize);
+    f.close();
+    http.end();
+
+    bool ok = (httpCode == HTTP_CODE_OK);
+    Serial.printf("[Audio] Upload i telefona (%s, %u baitu): HTTP %d %s\n",
+                  path, (unsigned)fileSize, httpCode, ok ? "OK" : "KLAIDA");
+    Serial.flush();
+    return ok;
+}
+
+// 2026-09-06: atvirkscias veiksmas — parsisiuncia is P10 telefono i lokalu
+// LittleFS faila (uzrasoma/perrasoma), kad Audio_PlayFile() galetu grotii
+// PAKEISTA visiskai — parsisiuntimas ir grojimas VISADA atskirti zingsniai.
+bool Audio_DownloadFromPhone(int person) {
+    char path[32];
+    snprintf(path, sizeof(path), "/audio_%d.wav", person);
+
+    HTTPClient http;
+    String url = String(SECRET_SERVER_STORE_URL) + "?person=" + String(person);
+    http.begin(url);
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("[Audio] Download is telefono (%s): HTTP %d KLAIDA\n", path, httpCode);
+        http.end();
+        return false;
+    }
+
+    File f = LittleFS.open(path, "w");
+    if (!f) {
+        Serial.printf("[Audio] Download: nepavyko sukurti lokalaus failo: %s\n", path);
+        http.end();
+        return false;
+    }
+    http.writeToStream(&f);
+    f.close();
+    http.end();
+
+    Serial.printf("[Audio] Download is telefono (%s): OK\n", path);
     Serial.flush();
     return true;
 }

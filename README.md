@@ -570,3 +570,42 @@ Vartotojo klausimas: "nelogiška, kad Waveshare pagamino ESP32 su kortele, kuri�
 4. Jei 2-3 punktai geri, bet vis tiek neveikia — logikos analizatorius ant CLK/CMD/D0, patikrinti, ar ESP32 apskritai siunčia signalus ir ar kortelė bent kartą atsako per D0.
 
 Pilna diagnostikos istorija (ChatGPT užklausa ir atsakymas) — `scratchpad/sd_card_problem_summary.md` (nekomitinta, sesijos laikina).
+
+## Sesija 2026-09-06 — P10 telefono saugykla (balsas + nuotraukos), nuotraukos rodymo avarijos diagnostika
+
+Ankstesnės sesijos pastaba apie SD kortelę minėjo P10 (Huawei) telefono 40GB atmintį kaip alternatyvią saugyklą. Vartotojas: *"Padarom šitą variantą. Žinau, kad reikės, tai kodėl ne dabar?"* — o vėliau pridūrė norą, kad nuotrauka, padaryta ESP32 kamera, būtų parodoma PAČIAME 3.5" LCD ekrane (ne tik saugoma telefone).
+
+### Android serverio (P10) saugykla — balso žinutės ir nuotraukos
+
+Programėlės Kotlin kodas YRA šiame repo (`android-server/`, žr. README pradžią) — NanoHTTPD serveris (`RecognitionServer.kt`) veido atpažinimui jau veikė; papildyta dviem naujom saugyklos funkcijų porom:
+- `POST/GET /store?person=N` — balso žinutės (WAV), saugomos `audio_N.wav`.
+- `POST/GET /photo` — paskutinė nufotografuota nuotrauka, saugoma `photo_latest.jpg`.
+
+`RecognitionForegroundService.kt` sukuria `audio/` poaplankį servisui paleidus ir perduoda jį `RecognitionServer` konstruktoriui (`storageDir`). Build'inta rankiniu būdu (`gradle-dist/gradle-8.4/bin/gradle.bat assembleDebug` — projekte nėra `gradlew`, o naujesnis cache'uotas Gradle 9.2.0 nesuderinamas su AGP 8.1.4), diegta per ADB, servisas paleistas rankiniu telefono ekrano palietimu (foreground service negalima paleisti vien per `adb shell am start-foreground-service` — trūksta eksportuoto leidimo).
+
+ESP32 pusėje (`src/main.cpp`, `lib/audio_output/`) — `Audio_UploadToPhone()`/`Audio_DownloadFromPhone()` ir `Photo_CaptureAndUpload()`/`Photo_DownloadFromPhone()`, visos naudoja `HTTPClient` streaming (`sendRequest("POST", &file, ...)` / `writeToStream(&file)`), ta pati idioma kaip jau veikiantis OTA/audio atkūrimo kodas — be viso failo įkėlimo į RAM. Balso įrašymo funkcija po sėkmingo lokalaus WAV įrašymo dabar papildomai iškviečia `Audio_UploadToPhone()` (telefonas — ATSARGINĖ kopija, lokali LittleFS kopija LIEKA greitam grojimui).
+
+Admin savininko puslapyje (`/admin/owner`) pridėta nauja kortelė "📷 Nuotrauka (P10 saugykla)" su mygtukais fotografuoti/rodyti ir būsenos atnaujinimu (ta pati polling idioma kaip OTA/mikrofono įrašymas).
+
+### Nuotraukos rodymas 3.5" ekrane — TIKRA avarija, ne tiesiog "neveikia"
+
+Pirminis bandymas (LVGL `lv_image` + `LV_USE_TJPGD` + `LV_USE_FS_STDIO`, skaitantis `"S:/photo_latest.jpg"` tiesiai iš LittleFS) rodė tuščią/juodą ekraną. Kelios iteracijos pataisė realias, bet ŠALUTINES problemas, kol atskleista TIKROJI priežastis:
+
+1. **Kelio klaida**: `lv_fs_stdio.c` daro `LV_FS_STDIO_PATH "%s"` sulipdymą BE "/" tarp jų — kelias PRIVALO pats prasidėti "/" (`"S:/photo_latest.jpg"`, ne `"S:photo_latest.jpg"`).
+2. **JPEG per didelis vidinei SRAM** — capture kadras (SVGA 800×600) TJpgDec dekodavimui rezervuojamas atminties kiekis rizikuoja tyliai pakibinti pagrindinę `loop()` gijos veiklą. Pataisyta priverstinai naudojant `FRAMESIZE_QVGA` (320×240) specialiai nuotraukos rodymo poreikiui (veido atpažinimui SVGA lieka nepaliestas), grąžinant originalų dydį po `esp_camera_fb_get()`.
+3. **Būsenos mašinos desinchronizacija** (vartotojo pats teisingai diagnozavo: *"Parodyti gali trukdyti mūsų šaldytuvo ESP-32 programa... gal reikia integruoti į šaldytuvo ESP?"*) — pirmas bandymas kvietė `UI_ShowPhoto()` TIESIOGIAI, apeinant `app_state_machine`, kuris VIENINTELIS valdo LCD backlight'ą. `s_state` likdavo nepakeistas → ekrano/meniu mygtuko elgesys nenuoseklus (vartotojo pastebėta regresija: *"labai blogai dirba sensorinis ekranas meniu"*). Pataisyta pridedant TIKRĄ naują būseną `APP_STATE_SHOWING_PHOTO` (žr. `lib/app_state_machine/`), sekančią tą patį šabloną kaip SCANNING/GREETING.
+4. **Savo klaida diagnostikoje**: laikinai įjungtas `LV_USE_LOG` TRACE lygiu (kiekvieno LVGL vidinio veiksmo `Serial.printf`) liko įjungtas po OTA — vartotojas pastebėjo *"veikia, bet daug kart lėčiau"*. Grąžinta į `LV_USE_LOG 0`.
+
+Po visų šių pataisymų ekranas VIS TIEK likdavo tuščias — vartotojo tiesus klausimas *"Bet suprantu, kad neveikia foto parodymas 3.5 ekrane?"* paskatino gilesnę diagnostiką: `LV_USE_LOG` laikinai įjungtas TIK `WARN` lygiu (be TRACE, be lėtėjimo), USB serial log'as fiksuojamas realiu laiku (`scratchpad/serial_logger.py` per COM3).
+
+**Rastas TIKRAS kaltininkas**: iškart po `"[Photo] Download is telefono: OK"` — `Guru Meditation Error: Core 1 panic'ed (Double exception)`, EXCCAUSE=2 (InstructionFetchError), identiška 4 kartus iš eilės, NEPRIKLAUSOMAI nuo nuotraukos dydžio (800×600 IR teisingo 320×240) ir NEPRIKLAUSOMAI nuo `loop()` FreeRTOS gijos stack dydžio (8KB → 32KB, jokio skirtumo — tai PANEIGĖ stack overflow hipotezę). `xtensa-esp32s3-elf-addr2line` prieš `firmware.elf` parodė kritinę grandinę: `fs_read` (`lv_fs_stdio.c:150`) → `esp_partition_read` (ESP-IDF `spi_flash/partition.c:424`) → avarija `_xt_context_save` viduje.
+
+**Izoliuojantis testas** (lemiamas): tuoj po `Photo_DownloadFromPhone()` failo įrašymo, TAS PATS failas GRYNU Arduino `LittleFS.open()/File::read()` API perskaitomas SĖKMINGAI, be avarijos. Avarija ivyksta TIK sekančiame žingsnyje, kai LVGL (per `lv_fs_stdio.c` `fopen()`/`fread()` → newlib VFS → `esp_littlefs` → `esp_partition_read`) bando skaityti TĄ PATĮ failą. Išvada: klaida izoliuota BŪTENT į LVGL `LV_USE_FS_STDIO` skaitymo kelią, ne į LittleFS/flash apskritai.
+
+**Galutinis sprendimas**: `LV_USE_FS_MEMFS` (žr. `include/lv_conf.h`) — nuotrauka skaitoma į PSRAM buferį per JAU ĮRODYTĄ saugų Arduino `LittleFS` API, tada LVGL rodo ją TIESIAI iš RAM (`LV_IMAGE_SRC_VARIABLE`, `lv_image_dsc_t` su `LV_COLOR_FORMAT_RAW`) — JOKIO flash skaitymo dekodavimo metu, taigi ir `esp_partition_read` avarijos kelio apskritai nėra.
+
+**Papildomas radinys**: OV5640 kameros JPEG koderio SOF0 antraštė KLAIDINGAI nurodo senos rezoliucijos (800×600) matmenis net po sėkmingo `set_framesize(FRAMESIZE_QVGA)` runtime pakeitimo — pats `fb->width`/`fb->height` (driverio laukas) teisingai rodo 320×240, bet užkoduoti SOF baitai — ne (žinoma esp32-camera/OV5640 keistenybė). Todėl rodymo matmenims naudojama ŽINOMA pastovi konstanta (320×240, atitinkanti priverstinį QVGA), NE JPEG antraštės skaitymas.
+
+**UX pataisymas**: ekrano auto-miego timeout (bendras su GREETING, 15s) buvo per trumpas nuotraukos patikrinimui, kai ESP↔telefonas HTTP round-trip per silpną WiFi ryšį užtrunka 60-90s — vartotojas spėdavo pažiūrėti į JAU užgesusį ekraną ir klaidingai manydavo, kad nuotrauka neveikia. Pridėtas atskiras `PHOTO_AWAKE_TIMEOUT_MS` (60s) TIK `APP_STATE_SHOWING_PHOTO` būsenai.
+
+**Rezultatas**: pilnas ciklas (ESP32 fotografuoja → siunčia į P10 → P10 saugo → ESP32 atsisiunčia → rodo 3.5" ekrane per RAM) patvirtintas veikiantis be avarijų, vartotojo patvirtinta *"Matau nuotrauka!"*.
