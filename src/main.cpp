@@ -361,6 +361,19 @@ static const char *ADMIN_ACCENT_COLORS[PERSON_COUNT] = {
     "#8e44ad",  // SELF
 };
 
+// 2026-09-06 (vartotojo pastaba: "man labai trūksta prie vardo dar
+// nedidelės spalvotos ikonėlės") — po vieną emoji kiekvienam, ta pati
+// tvarka kaip ADMIN_ACCENT_COLORS virs. Nera standartinio "ragatkos"
+// emoji Unikode, tad Seneliui naudojama artimiausia — lankas ir strele.
+static const char *ADMIN_PERSON_ICONS[PERSON_COUNT] = {
+    "",    // PERSON_UNKNOWN — nenaudojama
+    "🦄",  // GRANDDAUGHTER_1 (Saulytė) — vienaragis
+    "🐢",  // GRANDDAUGHTER_2 (Upytė) — vėžlys
+    "🩺",  // SON (Saulius) — daktaras
+    "❤️",  // WIFE (Monika) — širdelė
+    "🏹",  // SELF (Senelis) — šaulys (artimiausias emoji ragatkai)
+};
+
 static String buildAdminPage() {
     String html;
     html.reserve(4096);
@@ -422,10 +435,11 @@ static String buildAdminPage() {
         const FamilyMessage &pubMsg = FamilyMessages_Get(person, MessageKind::PUBLIC);
         const FamilyMessage &privMsg = FamilyMessages_Get(person, MessageKind::PRIVATE);
         const char *accent = ADMIN_ACCENT_COLORS[i];
+        const char *icon = ADMIN_PERSON_ICONS[i];
         String pid = String((int)person);
 
         html += "<div class='card' style='border-left-color:" + String(accent) + "'>";
-        html += "<h3 style='color:" + String(accent) + "'>" + escapeHtml(String(p.publicName)) + "</h3>";
+        html += "<h3 style='color:" + String(accent) + "'>" + String(icon) + " " + escapeHtml(String(p.publicName)) + "</h3>";
 
         html += "<form method='POST' action='/admin/message'>";
         html += "<input type='hidden' name='person' value='" + pid + "'>";
