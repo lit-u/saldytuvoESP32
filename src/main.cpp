@@ -298,7 +298,14 @@ bool initCamera() {
     // kameros LED.
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor) {
-        sensor->set_gainceiling(sensor, GAINCEILING_16X);
+        // 2026-09-06 (vartotojo pastaba: "labai tamsi nuotrauka, o apsvietimas
+        // pusiau geras") — dabar, kai nuotrauka PAGALIAU matoma ekrane (zr.
+        // "Nuotraukos rodymas SCANNING ekrane" README skyriu), paaiskejo, kad
+        // esamas 16X gain ceiling per silpnas net vidutiniam apsvietimui.
+        // Driver'is palaiko iki 128X (žr. esp32-camera sensor.h) — pakelta
+        // iki 64X (saikingas 4x sokis, isvengiant pernelyg didelio triuksmo,
+        // kuris galetu pabloginti atpazinimo tiksluma).
+        sensor->set_gainceiling(sensor, GAINCEILING_64X);
         sensor->set_ae_level(sensor, 2);
     }
 

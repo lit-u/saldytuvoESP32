@@ -249,6 +249,21 @@ void UI_ShowStandby() {
 }
 
 void UI_ShowScanning() {
+    // KLAIDA rasta 2026-09-06 (vartotojo pastaba: "blykste suveike tik pirma
+    // karta, veliau neveike ir tamsu labai") — UI_ShowCameraFlashOn() turi
+    // apsauga "if (s_flashOverlay) return;", kad nesukurtu antro overlay,
+    // kol pirmas dar "dega". Jei DEL BET KOKIOS PRIEZASTIES
+    // UI_ShowCameraFlashOff() nebuvo iskviestas (nutraukta seka, PWR
+    // paspaustas VIDURYJE fotografavimo, ir pan.), s_flashOverlay LIEKA
+    // NE-NULL AMZINAI — VISI sekantys UI_ShowCameraFlashOn() kvietimai
+    // tyliai NIEKO nedaro, blykste daugiau NIEKADA nebepasirodo. FIX:
+    // eksplicitiskai isvalome bukle KIEKVIENO NAUJO scan ciklo pradzioje,
+    // nepriklausomai nuo to, kas atsitiko praeita karta.
+    if (s_flashOverlay) {
+        lv_obj_delete(s_flashOverlay);
+        s_flashOverlay = nullptr;
+    }
+
     EyeRenderer_MoveToParent(s_scrScanning);
     EyeRenderer_SetState(EYE_STATE_LOOKING);
     lv_label_set_text(s_scanningLabel, "Sveiki!");

@@ -631,3 +631,15 @@ Vartotojo pageidavimas: *"noriu, kad kai vyksta atpažinimas, žmogus jau matyt�
 **Pastovumas ("nepradings po švaraus build'o")**: `lib/lv_tjpgd` yra `.pio/libdeps/` viduje — GITIGNORE'INTAS, PlatformIO jį atsisiunčia iš naujo per kiekvieną priklausomybių refetch'inimą. Kad `lv_tjpgd_decode_thumbnail()` NEIŠNYKTŲ švarioje aplinkoje (nauja mašina, rankiniu būdu ištrinta `.pio`), pataisyti `lv_tjpgd.c`/`.h` nukopijuoti į `patches/lv_tjpgd/` (ŠIS katalogas YRA git'e), o `scripts/apply_lv_tjpgd_patch.py` (paleidžiamas per `platformio.ini` `extra_scripts = pre:...`) automatiškai juos nukopijuoja VIRŠ vendored versijos PRIEŠ kiekvieną build'ą.
 
 **Rezultatas**: pilnas ciklas (ESP32 fotografuoja → siunčia į P10 → P10 saugo → ESP32 atsisiunčia → rodo 3.5" ekrane per RAM) patvirtintas veikiantis be avarijų, vartotojo patvirtinta *"Matau nuotrauka!"*.
+
+### NEIŠSPRĘSTA: kameros "blykstė" (LCD apšvietimas) veikia TIK PIRMĄ kartą po įsijungimo, nuotrauka per tamsi
+
+Po sėkmingo nuotraukos rodymo (žr. virš), vartotojas pastebėjo: *"tik labai tamsi nuotrauka, o apšvietimas pusiau geras"*. Pakartotinis testavimas (2-3 PWR paspaudimai iš eilės, laukiant, kol kiekvienas scan ciklas pilnai baigiasi) atskleidė aiškų, PASTOVŲ elgesį: **LCD "blykstė" (baltas viso ekrano sužybtelėjimas, naudojamas kaip apšvietimo šaltinis, nes plokštėje nėra atskiro kameros LED) MATOSI TIK PIRMĄ kartą po įrenginio įsijungimo/persikrovimo — visi sekantys bandymai (be reboot tarp jų) blykstės VISIŠKAI nebeparodo**, ir nuotrauka lieka tamsi.
+
+**Keturi bandymai, VISI be jokio (net dalinio) matomo efekto:**
+1. `gainceiling` 16X → 64X (patikrinta per admin puslapį, kad nustatymas TIKRAI pritaikomas).
+2. `delay(CAMERA_FLASH_MS)` perkeltas PRIEŠ `FaceRecognition_IdentifyAsync()` (buvo PO — logikos klaida, nes async task'as kadrą paima beveik iš karto, ne po delay).
+3. `CAMERA_FLASH_MS` 600ms → 1500ms.
+4. `s_flashOverlay` apsauginis būsenos išvalymas `UI_ShowScanning()` pradžioje (hipotezė: stuck pointer po nutrauktos sekos) — simptomas IŠLIKO IDENTIŠKAS, tai eliminuoja šią konkrečią hipotezę.
+
+Pilna diagnostikos istorija ir klausimai ChatGPT — `scratchpad/camera_flash_brightness_problem_summary.md` (nekomitinta, sesijos laikina). **Kitas žingsnis**: laukiama ChatGPT konsultacijos atsakymo arba serial log diagnostikos (`Serial.printf` `UI_ShowCameraFlashOn/Off()` viduje + `sensor->status` nuskaitymas prieš/po kiekvieno fiksavimo), kad atskirtume UI/LVGL puses klausimą nuo kameros/AEC aparatūros klausimo.

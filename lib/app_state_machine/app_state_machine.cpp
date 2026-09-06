@@ -171,7 +171,14 @@ static void enterScanning() {
 // 2026-09-05: 350ms nepakako kontraviesos atveju (zr. main.cpp AE_LEVEL
 // pastaba) — prailginta, daugiau laiko sensoriui pilnai pritaikyti AE prie
 // naujos (sviesesnes) LCD apsvietimo situacijos PRIES kadro paemima.
-static const uint32_t CAMERA_FLASH_MS = 600;
+// 2026-09-06 (vartotojo pastaba: "pirma-antra karta buvo sviesiau, bet
+// toliau vel tamsu") — sensoriaus TESTINE automatine ekspozicija (AEC/AGC)
+// dreifuoja link tamsaus tarp skanavimu (kamera mato daugiausia juoda
+// ekrano fona), tad kuo ilgiau prietaisas budi, tuo TOLIAU nuo sviesios
+// busenos ji nudreifuoja, ir 600ms nebeuztenka pilnai atsigauti. Bandymas:
+// gerokai prailginta (1500ms), kad AEC turetu daugiau laiko konverguoti
+// AUKSTYN, nepriklausomai nuo to, kaip toli ji nudreifavo.
+static const uint32_t CAMERA_FLASH_MS = 1500;
 
 static void onWakeSequenceDone() {
     // Apsauga: jei per ta laika jau grizom i STANDBY (pvz. rankiniu budu ar
@@ -184,10 +191,24 @@ static void onWakeSequenceDone() {
     // laikoma per visa fotografavimo langa (trumpas delay() cia priimtinas —
     // tai NE daugiasekundis HTTP laukimas, o vienkartinis ~0.35s "blyksnis",
     // per kuri niekas kitas is esmes neturetu animuotis).
+    // KLAIDA rasta 2026-09-06 (vartotojo pastaba: "labai tamsi nuotrauka,
+    // o apsvietimas pusiau geras", net PADIDINUS gain ceiling 16X->64X BE
+    // JOKIO pokycio): delay(CAMERA_FLASH_MS) buvo CIA, PO
+    // FaceRecognition_IdentifyAsync() — bet tas async task'as (kitame core,
+    // face_recognition.cpp) paima kadra (esp_camera_fb_get()) BEVEIK IS
+    // KARTO po starto (per kelis ms), NE po delay(). Taigi delay() TIK
+    // ilgino, kiek laiko blykste MATOSI ekrane PO kadro paemimo — sensoriaus
+    // automatinei ekspozicijai (AEC) NEBUVO duota jokio laiko prisitaikyti
+    // prie naujai apsviesto (LCD blykste) vaizdo PRIES fotografuojant. FIX:
+    // delay PERKELTAS PRIES FaceRecognition_IdentifyAsync() — dabar sensoris
+    // tikrai turi laiko AEC konvergencijai naujoje sviesoje PRIES kadro
+    // paemima. Trumpas papildomas buferis PO async starto uztikrina, kad
+    // blykste dar dega, kol kitas core realiai pradeda fotografuoti.
     UI_SetScanningStatusText("Fotografuojama...");
     UI_ShowCameraFlashOn();
-    FaceRecognition_IdentifyAsync();
     delay(CAMERA_FLASH_MS);
+    FaceRecognition_IdentifyAsync();
+    delay(50);
     UI_ShowCameraFlashOff();
     s_recognizeStartMs = millis();
     s_lastStatusUpdateMs = s_recognizeStartMs;
