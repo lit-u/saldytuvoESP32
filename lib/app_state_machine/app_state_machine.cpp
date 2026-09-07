@@ -159,7 +159,21 @@ static void enterScanning() {
     s_scanStartMs = millis();
     s_captureStarted = false;
     s_state = APP_STATE_SCANNING;
-    EyeRenderer_PlayWakeSequence(onWakeSequenceDone);
+    // KLAIDA rasta 2026-09-07 (po ilgos "blykste nesuveikia" diagnostikos —
+    // I2C visada sekmingas, laikas TIKSLIAI atitinka CAMERA_FLASH_MS, bet
+    // fiziskai blykstes NIEKADA nesimato): onWakeSequenceDone() anksciau buvo
+    // kvieciamas TIESIOGIAI is eye_renderer.cpp sequencer'io LVGL timer
+    // callback'o vidaus (zr. playCurrentStep() "if (cb) cb();"). O
+    // onWakeSequenceDone() savo ruoztu kviecia lv_timer_handler() KELIS
+    // KARTUS (UI_ShowCameraFlashOn() + laukimo ciklas) — REKURSYVUS
+    // lv_timer_handler() kvietimas IS LVGL timer callback'o vidaus yra
+    // nesaugus/neapibreztas elgesys (LVGL nera re-entrant), galintis
+    // sugadinti/praleisti bet kokio TA PACIA akimirka sukurto objekto
+    // (baltos blykstes overlay) piesima. FIX: NEBEPERDUODAME callback'o
+    // tiesiogiai — laukiam sekos pabaigos per EyeRenderer_IsSequencePlaying()
+    // pooling'a is AppStateMachine_Update() (main loop(), NE is LVGL timer
+    // vidaus) — zr. APP_STATE_SCANNING atveji zemiau.
+    EyeRenderer_PlayWakeSequence(nullptr);
 }
 
 // Kviecianas is eye_renderer sequencer'io, kai WAKE seka baigiasi (~2.3s).
@@ -208,7 +222,29 @@ static void onWakeSequenceDone() {
     UI_ShowCameraFlashOn();
     delay(CAMERA_FLASH_MS);
     FaceRecognition_IdentifyAsync();
-    delay(50);
+    // KLAIDA rasta 2026-09-07 (serial log diagnostika: kadro LUMA nuosekliai
+    // krito 134->87->36->32 per sekancius scan'us, NORS backlight PWM I2C
+    // rasymas VISADA sekmingas su ta pacia reiksme) — aklas delay(50) CIA
+    // NEGARANTUODAVO, kad esp_camera_fb_get() (async task'e, kitame core)
+    // realiai jau bus ivykes PRIES gesinant blykste. SVGA JPEG fiksavimas
+    // gali uztrukti ilgiau nei 50ms, tad blykste galejo issijungti PRIES ar
+    // VIDURYJE realios sensoriaus ekspozicijos. FIX: laukti (su saugikliu),
+    // kol FaceRecognition_IsFrameCaptured() patvirtins, kad fb_get() jau
+    // ivyko, TIK TADA gesinti — zr. face_recognition.h komentara.
+    // KLAIDA rasta 2026-09-07 (vartotojo pastaba: "ekranas nieko nerodo" po
+    // PWR/blykstes — TIK SCANNING/blykstes sekos metu, STANDBY akys rodomos
+    // gerai) — sitas laukimo ciklas anksciau kviete TIK delay(5), NIEKADA
+    // lv_timer_handler(). Kol laukimas buvo trumpas (~50ms, senas kodas),
+    // niekas nepastebejo — bet PRIDEJUS apsilimo kadrus (face_recognition.cpp,
+    // 3x papildomas esp_camera_fb_get()), sis laukimas gali uztrukti gerokai
+    // ilgiau (kelias JPEG SVGA kadru fiksavimo trukmes), o SPI ekrano
+    // atnaujinimui/LVGL vidinei busenai reikia periodinio lv_timer_handler()
+    // "pumpavimo" — ilgas blokavimas be jo galejo palikti ekrana tuscia/pilka.
+    uint32_t flashWaitStartMs = millis();
+    while (!FaceRecognition_IsFrameCaptured() && millis() - flashWaitStartMs < 3000) {
+        lv_timer_handler();
+        delay(5);
+    }
     UI_ShowCameraFlashOff();
     s_recognizeStartMs = millis();
     s_lastStatusUpdateMs = s_recognizeStartMs;
@@ -238,6 +274,21 @@ static void onWakeSequenceDone() {
         if (s_scanThumbBuf &&
             lv_tjpgd_decode_thumbnail(frameData, frameLen, SCAN_THUMB_W, SCAN_THUMB_H,
                                        s_scanThumbBuf, (size_t)SCAN_THUMB_W * SCAN_THUMB_H * 3)) {
+            // 2026-09-07 diagnostika (ChatGPT konsultacija del "labai tamsi
+            // nuotrauka") — objektyvus dekoduoto kadro rysklumo (luma) matas,
+            // nepriklausomas nuo zmogaus akies/ekrano — leidzia atskirti, ar
+            // KAMERA realiai gauna skirtinga apsvietima tarp scan ciklu, ar
+            // problema tik LCD/backlight puseje (zr. io_extension.cpp PWM logus).
+            {
+                uint32_t sumLuma = 0;
+                const uint32_t pixCount = (uint32_t)SCAN_THUMB_W * SCAN_THUMB_H;
+                for (uint32_t i = 0; i < pixCount; i++) {
+                    const uint8_t *px = s_scanThumbBuf + i * 3;
+                    sumLuma += (uint32_t)(px[0] + px[1] + px[2]) / 3;
+                }
+                Serial.printf("[AppState] Kadro VIDUTINE LUMA=%lu (0-255, is %lu pikseliu) millis=%lu\n",
+                              (unsigned long)(sumLuma / pixCount), (unsigned long)pixCount, millis());
+            }
             Serial.printf("[AppState] Miniatiura dekoduota (%ux%u is %ux%u) — rodoma nuotrauka.\n",
                           SCAN_THUMB_W, SCAN_THUMB_H, frameW, frameH);
             UI_ScanningShowPhoto(s_scanThumbBuf, SCAN_THUMB_W, SCAN_THUMB_H);
@@ -311,6 +362,12 @@ void AppStateMachine_Update(bool motionDetected) {
 
         case APP_STATE_SCANNING: {
             if (!s_captureStarted) {
+                // Sekos pabaigos pooling'as (zr. enterScanning() komentara) —
+                // SAUGUS, nes cia esame main loop() kontekste, NE LVGL timer
+                // callback'o viduje.
+                if (!EyeRenderer_IsSequencePlaying()) {
+                    onWakeSequenceDone();
+                }
                 // Dar vyksta choreografuota WAKE seka (eye_renderer
                 // sequencer'is) — jos pabaigoje onWakeSequenceDone() pati
                 // pradeda fotografavima (FaceRecognition_IdentifyAsync).

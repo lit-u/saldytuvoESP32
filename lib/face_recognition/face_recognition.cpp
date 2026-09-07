@@ -21,6 +21,11 @@ static size_t s_lastFrameLen = 0;
 static uint16_t s_lastFrameW = 0;
 static uint16_t s_lastFrameH = 0;
 static volatile bool s_lastFrameReady = false;
+// 2026-09-07 diagnostika (žr. header'io FaceRecognition_IsFrameCaptured()
+// komentarą) — atskiras nuo s_lastFrameReady, nes TAS liktų "true" nuo
+// PRAEITO bandymo kol sis dar nespejo pats prasidėti (trumpas race'as
+// tarp task'o starto ir pirmo esp_camera_fb_get() rezultato).
+static volatile bool s_frameCaptured = false;
 
 // Vardas (serverio JSON "name") -> RecognizedPerson, remiantis TIK esamais
 // family_profiles.cpp displayName ("Svecias" praleidziamas — PERSON_UNKNOWN
@@ -47,7 +52,30 @@ RecognizedPerson FaceRecognition_Identify() {
         return PERSON_UNKNOWN;
     }
 
+    // KLAIDA rasta 2026-09-07 (serial log diagnostika: kadro LUMA nuosekliai
+    // krito per sekancius scan'us KIEKVIENAME firmware bandyme — 134->87->36->32,
+    // veliau po flash-off sinchronizacijos fix'o VIS TIEK 52->19->21 — abu
+    // kartus greitai pasiekiant "grinda"/plato). Backlight PWM I2C rasymas
+    // VISADA sekmingas su ta pacia reiksme, blykstes-off sinchronizacija jau
+    // sutvarkyta (zr. FaceRecognition_IsFrameCaptured()) — vadinasi, LIKUSI
+    // priezastis yra PACIO SENSORIAUS AEC/AGC (automatines ekspozicijos)
+    // BUSENA, kuri paveldima is PRAEITO (tamsaus, be blykstes) kadro ir
+    // NESPEJA pilnai atsigauti per viena esp_camera_fb_get() kvietima naujoje
+    // (skaisciai apsvieстoje) scenoje. FIX: keli "apsilimo" kadrai (paimami IR
+    // ISKART ISMETAMI) PRIES realu (siunciama) kadra — standartine kameru
+    // technika, duodanti AEC/AGC algoritmui kelis kadrus laiko konverguoti i
+    // NAUJA (blykstes apsviesta) scena, ne i senaji (tamsu) buferio turini.
+    for (int warmup = 0; warmup < 3; warmup++) {
+        camera_fb_t *warmupFb = esp_camera_fb_get();
+        if (warmupFb) esp_camera_fb_return(warmupFb);
+    }
+
     camera_fb_t *fb = esp_camera_fb_get();
+    // BUTINA CIA (ne veliau): pats esp_camera_fb_get() kvietimas yra momentas,
+    // kai sensorius fiziskai fiksuoja REALU (siunciama) kadra — LCD "blykste"
+    // nebereikalinga laikyti dega po sito (zr. FaceRecognition_IsFrameCaptured()
+    // header'yje) — apsilimo kadrai AUKSCIAU jau ivyko SU blykste dar dega.
+    s_frameCaptured = true;
     if (fb == nullptr) return PERSON_UNKNOWN;
 
     // Kopija RAM (PSRAM) buferyje UI puse PRIES siunciant — kad vartotojas
@@ -143,6 +171,9 @@ void FaceRecognition_IdentifyAsync() {
     if (s_asyncBusy) return;  // jau vyksta — nepradeti antro lygiagreciai
     s_asyncBusy = true;
     s_asyncResult = PERSON_UNKNOWN;
+    // Nustatoma CIA (kviecianciame/main thread'e), PRIES sukuriant task'a —
+    // jokio race'o su task'o vidumi (zr. FaceRecognition_IsFrameCaptured()).
+    s_frameCaptured = false;
     // Stack 8KB — HTTPClient+ArduinoJson+TLS stack naudojimui pakankamai;
     // core 0 (WiFi/protokolu core), kad neblokuotu Arduino loop() core (1).
     xTaskCreatePinnedToCore(faceRecognitionTask, "faceRecog", 8192, nullptr,
@@ -151,6 +182,10 @@ void FaceRecognition_IdentifyAsync() {
 
 bool FaceRecognition_IsBusy() {
     return s_asyncBusy;
+}
+
+bool FaceRecognition_IsFrameCaptured() {
+    return s_frameCaptured;
 }
 
 RecognizedPerson FaceRecognition_GetResult() {

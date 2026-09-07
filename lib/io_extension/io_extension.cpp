@@ -8,7 +8,16 @@ static void writeReg(uint8_t reg, uint8_t value) {
     s_wire->beginTransmission(IO_EXTENSION_I2C_ADDR);
     s_wire->write(reg);
     s_wire->write(value);
-    s_wire->endTransmission(true);
+    // 2026-09-07 (ChatGPT diagnostika del "blykste tik pirma karta"): sitas
+    // grazinamas kodas anksciau buvo VISAI ignoruojamas — jei kameros SCCB
+    // (I2C), kuris eina PER TA PACIA fizine magistrale (zr. main.cpp
+    // config.sccb_i2c_port komentara), paliktu bendra busa "uzimta"/klaidoje,
+    // sitas rasymas GALETU tyliai nepavykti, o kodas manytu, kad viskas gerai.
+    uint8_t err = s_wire->endTransmission(true);
+    if (err != 0) {
+        Serial.printf("[IO_EXT] I2C RASYMO KLAIDA! reg=0x%02X val=%u err=%u millis=%lu\n",
+                      reg, value, err, millis());
+    }
 }
 
 static uint8_t readReg(uint8_t reg) {
@@ -43,6 +52,10 @@ void IO_EXTENSION_Pwm_Output(uint8_t percent) {
     // (galimas draiverio/aparaturos ypatumas — palikta kaip patikrinta).
     if (percent >= 97) percent = 97;
     uint8_t duty = (uint8_t)(percent * (255 / 100.0));
+    // 2026-09-07 diagnostika (žr. writeReg() komentarą) — leidžia serial
+    // loge tiksliai matyti, KADA ir KOKIA reikšme backlight PWM buvo
+    // siunciama, kad butu galima palyginti su kameros SCCB veiklos laiku.
+    Serial.printf("[IO_EXT] PWM percent=%u duty=%u millis=%lu\n", percent, duty, millis());
     writeReg(IO_EXTENSION_REG_PWM, duty);
 }
 

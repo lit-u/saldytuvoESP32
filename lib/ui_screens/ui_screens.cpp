@@ -468,6 +468,10 @@ void UI_ShowPublicGreeting(const PersonProfile &p) {
 }
 
 void UI_ShowCameraFlashOn() {
+    // 2026-09-07 diagnostika (ChatGPT konsultacija del "blykste tik pirma
+    // karta") — patvirtina, ar SI funkcija apskritai realiai iskvieciama
+    // kiekviena karta (palyginti su io_extension.cpp PWM logais laiko atzvilgiu).
+    Serial.printf("[FLASH] ON millis=%lu overlay(pries)=%p\n", millis(), s_flashOverlay);
     if (s_flashOverlay) return;  // jau dega — nekurti antro
     s_flashOverlay = lv_obj_create(lv_screen_active());
     lv_obj_remove_style_all(s_flashOverlay);
@@ -484,6 +488,7 @@ void UI_ShowCameraFlashOn() {
 }
 
 void UI_ShowCameraFlashOff() {
+    Serial.printf("[FLASH] OFF millis=%lu overlay(pries)=%p\n", millis(), s_flashOverlay);
     if (!s_flashOverlay) return;
     lv_obj_delete(s_flashOverlay);
     s_flashOverlay = nullptr;

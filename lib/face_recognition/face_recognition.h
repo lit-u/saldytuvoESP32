@@ -43,6 +43,20 @@ RecognizedPerson FaceRecognition_GetResult();
 // (LV_USE_FS_MEMFS, zr. lv_conf.h — jokio flash skaitymo rodymo metu).
 bool FaceRecognition_GetLastFrame(const uint8_t **data, size_t *len, uint16_t *w, uint16_t *h);
 
+// 2026-09-07 (ChatGPT konsultacija + serial log diagnostika del "labai tamsi
+// nuotrauka") — rasta LENKTYNIU SALYGA (race condition): app_state_machine.cpp
+// anksciau iskart po FaceRecognition_IdentifyAsync() paleidimo laukdavo TIK
+// aklo delay(50), tada gesindavo LCD "blykste" — bet async task'as (kitame
+// core) tuo metu DAR TIK PRADEJO kviesti esp_camera_fb_get() (realaus
+// SVGA JPEG kadro fiksavimas gali uztrukti gerokai ilgiau nei 50ms, zr.
+// FaceRecognition_Identify()). Todel blykste galejo issijungti PRIES arba
+// VIDURYJE realaus sensoriaus ekspozicijos momento — paaiskina, kodel
+// CAMERA_FLASH_MS (delay PRIES paleidziant task'a) padidinimas neturejo
+// jokios itakos: problema buvo PO starto, ne pries. Naudoti taip: iskart po
+// FaceRecognition_IdentifyAsync() laukti (su saugikliu), kol si funkcija
+// grazins true, TIK TADA gesinti blykste.
+bool FaceRecognition_IsFrameCaptured();
+
 // TESTAVIMUI/FALLBACK: rankiniu budu "priverstinai" nustato atpazinta asmeni,
 // aplenkiant realu serverio kvietima. Naudinga UI/state machine derinimui
 // arba kaip atsarginis variantas, jei serveris laikinai nepasiekiamas.
