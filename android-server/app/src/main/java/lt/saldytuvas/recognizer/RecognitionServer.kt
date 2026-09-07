@@ -3,9 +3,13 @@ package lt.saldytuvas.recognizer
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import fi.iki.elonen.NanoHTTPD
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Embedded HTTP serveris telefone — ESP32 POST'ina JPEG kadra i /recognize,
@@ -35,7 +39,7 @@ class RecognitionServer(
 
     override fun serve(session: IHTTPSession): Response {
         return try {
-            when {
+            val response = when {
                 session.method == Method.GET && session.uri == "/health" ->
                     jsonResponse(JSONObject().put("status", "ok"))
 
@@ -60,12 +64,43 @@ class RecognitionServer(
                 session.method == Method.GET && session.uri == "/photo" ->
                     handlePhotoDownload()
 
+                // 2026-09-07 (vartotojo pastaba: "šeimos nuotraukų rėmelis") —
+                // galerijos nuotraukos (admin puslapio JS ikelia/tvarko
+                // TIESIOGIAI, be ESP32 tarpininkavimo — zr. secrets.h
+                // SECRET_SERVER_GALLERY_BASE_URL komentara). OPTIONS —
+                // CORS preflight (narsykle siunciau automatiskai, nes
+                // "image/jpeg" Content-Type nera "simple" pagal CORS specifikacija).
+                session.method == Method.OPTIONS && session.uri.startsWith("/gallery/") ->
+                    newFixedLengthResponse(Response.Status.OK, "text/plain", "")
+
+                session.method == Method.POST && session.uri == "/gallery/upload" ->
+                    handleGalleryUpload(session)
+
+                session.method == Method.GET && session.uri == "/gallery/list" ->
+                    handleGalleryList()
+
+                session.method == Method.GET && session.uri == "/gallery/photo" ->
+                    handleGalleryPhoto(session)
+
+                session.method == Method.POST && session.uri == "/gallery/delete" ->
+                    handleGalleryDelete(session)
+
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found")
             }
+            if (session.uri.startsWith("/gallery/")) addCorsHeaders(response) else response
         } catch (e: Exception) {
             onLog("KLAIDA: ${e.message}")
             jsonResponse(JSONObject().put("name", "unknown").put("error", e.message ?: "unknown"))
         }
+    }
+
+    // Admin puslapio JS kreipiasi TIESIOGIAI (skirtingas "origin" nuo ESP32
+    // adminkes) — be siu antrasciu narsykle blokuotu atsakyma CORS politikos.
+    private fun addCorsHeaders(response: Response): Response {
+        response.addHeader("Access-Control-Allow-Origin", "*")
+        response.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        response.addHeader("Access-Control-Allow-Headers", "Content-Type")
+        return response
     }
 
     // 2026-09-06: balso zinutes failo issaugojimas — RAW binarinis POST body
@@ -145,6 +180,108 @@ class RecognitionServer(
             return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "nera nuotraukos")
         }
         return newFixedLengthResponse(Response.Status.OK, "image/jpeg", file.inputStream(), file.length())
+    }
+
+    // 2026-09-07 — "šeimos nuotraukų rėmelis" (žr. saldytuvas README naują
+    // skyrių). Skirtingai nuo /photo (VIENA "naujausia" nuotrauka), cia —
+    // TIKRA galerija: keli failai, kiekvienas su vardu+aprašymu, niekada
+    // savaime neperrasomi. Admin puslapio JS PATS suspaudzia (canvas
+    // toBlob('image/jpeg')) PRIES siusdamas — visada baseline JPEG, TAD
+    // sis serveris tiesiog issaugo baitus, be jokio papildomo apdorojimo.
+    // 2026-09-07 (vartotojo pastaba: "Data nebūtina, palik aprašymui
+    // laukelį") — data NEBERENKAMA is vartotojo (naudojamas failo
+    // lastModified() rodymui), o vietoj jos LAISVAS teksto aprasymas,
+    // saugomas SALIA esancio ".txt" failo (ta pati baze, tas pats vardas).
+    private fun galleryDir(): File {
+        val dir = File(storageDir.parentFile, "gallery")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun handleGalleryUpload(session: IHTTPSession): Response {
+        val rawName = session.parms["name"]?.trim()
+        if (rawName.isNullOrBlank()) {
+            return jsonResponse(JSONObject().put("ok", false).put("error", "trukstu 'name' parametro"))
+        }
+        val contentLength = session.headers["content-length"]?.toIntOrNull()
+        if (contentLength == null) {
+            return jsonResponse(JSONObject().put("ok", false).put("error", "trukstu Content-Length"))
+        }
+        // Failo varde saugomas vardas — paprasciausias "duomenu baze" be
+        // atskiro JSON/SQLite indekso (nuoseklu su likusio projekto "kuo
+        // paprasciau" filosofija, zr. README). Aprasymas — atskirame ".txt".
+        val safeName = rawName.replace(Regex("[^\\w ÄÖÜäöüÀ-ÿ-]"), "_").take(40)
+        val baseName = "${safeName}_${System.currentTimeMillis()}"
+        val file = File(galleryDir(), "$baseName.jpg")
+        val input = session.inputStream
+        val chunk = ByteArray(8192)
+        var remaining = contentLength
+        file.outputStream().use { out ->
+            while (remaining > 0) {
+                val read = input.read(chunk, 0, minOf(chunk.size, remaining))
+                if (read == -1) break
+                out.write(chunk, 0, read)
+                remaining -= read
+            }
+        }
+        val description = session.parms["description"]?.trim()
+        if (!description.isNullOrEmpty()) {
+            File(galleryDir(), "$baseName.txt").writeText(description, Charsets.UTF_8)
+        }
+        onLog("Galerijos nuotrauka issaugota: $baseName.jpg (${file.length()} baitu)")
+        return jsonResponse(JSONObject().put("ok", true).put("file", "$baseName.jpg"))
+    }
+
+    private fun handleGalleryList(): Response {
+        val arr = JSONArray()
+        val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        galleryDir().listFiles { f -> f.isFile && f.name.endsWith(".jpg") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.forEach { f ->
+                val base = f.name.removeSuffix(".jpg")
+                val parts = base.split("_")
+                // Paskutinis "_"-atskirtas gabalas = millis (unikalumui), likusi dalis = vardas.
+                val name = parts.dropLast(1).joinToString("_")
+                val descFile = File(galleryDir(), "$base.txt")
+                val description = if (descFile.exists()) descFile.readText(Charsets.UTF_8) else ""
+                arr.put(
+                    JSONObject()
+                        .put("file", f.name)
+                        .put("name", name)
+                        .put("date", dateFmt.format(Date(f.lastModified())))
+                        .put("description", description)
+                        .put("bytes", f.length())
+                )
+            }
+        return jsonResponse(JSONObject().put("items", arr))
+    }
+
+    private fun handleGalleryPhoto(session: IHTTPSession): Response {
+        val fname = session.parms["file"]
+        val file = resolveGalleryFile(fname)
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "nera nuotraukos")
+        return newFixedLengthResponse(Response.Status.OK, "image/jpeg", file.inputStream(), file.length())
+    }
+
+    private fun handleGalleryDelete(session: IHTTPSession): Response {
+        val fname = session.parms["file"]
+        val file = resolveGalleryFile(fname)
+            ?: return jsonResponse(JSONObject().put("ok", false).put("error", "nera tokio failo"))
+        val deleted = file.delete()
+        File(galleryDir(), file.name.removeSuffix(".jpg") + ".txt").delete()
+        onLog("Galerijos nuotrauka pasalinta: $fname")
+        return jsonResponse(JSONObject().put("ok", deleted))
+    }
+
+    // Apsauga nuo path traversal ("file=../../whatever") — tikrinama, kad
+    // rezultatas TIKRAI liktu galleryDir() viduje.
+    private fun resolveGalleryFile(fname: String?): File? {
+        if (fname.isNullOrBlank()) return null
+        val dir = galleryDir()
+        val file = File(dir, fname)
+        if (!file.exists()) return null
+        if (!file.canonicalPath.startsWith(dir.canonicalPath + File.separator)) return null
+        return file
     }
 
     private fun handleRecognize(session: IHTTPSession): Response {

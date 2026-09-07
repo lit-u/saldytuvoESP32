@@ -308,7 +308,8 @@ bool Audio_PlayFile(const char *path) {
 // esp-32 mikra", "vis vien butu reikeje, nes norisi ir vaikams palikti
 // galimybe irasyti") — irasymas TIESIOGIAI per irenginio ES7210
 // mikrofona, alia narsykles ikelimo kelio (abu veikia lygiagreciai).
-bool Audio_RecordToFile(const char *path, uint32_t durationMs, volatile bool *stopRequested) {
+bool Audio_RecordToFile(const char *path, uint32_t durationMs, volatile bool *stopRequested,
+                         void (*onSecondTick)(uint32_t, uint32_t)) {
     Serial.printf("[Audio] Record: kviesta su %s, %u ms (s_audioReady=%s)\n",
                   path, (unsigned)durationMs, s_audioReady ? "true" : "false");
     Serial.flush();
@@ -343,10 +344,19 @@ bool Audio_RecordToFile(const char *path, uint32_t durationMs, volatile bool *st
     int32_t peakAbs = 0;
 
     uint32_t startMs = millis();
+    uint32_t totalS = durationMs / 1000;
+    uint32_t lastTickS = UINT32_MAX;
     while (millis() - startMs < durationMs) {
         if (stopRequested && *stopRequested) {
             Serial.println("[Audio] Record: sustabdyta anksciau (Stop mygtukas).");
             break;
+        }
+        if (onSecondTick) {
+            uint32_t elapsedS = (millis() - startMs) / 1000;
+            if (elapsedS != lastTickS) {
+                lastTickS = elapsedS;
+                onSecondTick(elapsedS, totalS);
+            }
         }
         size_t bytesRead = 0;
         esp_err_t rerr = i2s_read(I2S_PORT, rxBuf, sizeof(rxBuf), &bytesRead, portMAX_DELAY);

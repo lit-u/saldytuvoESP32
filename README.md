@@ -9,10 +9,11 @@ Autonominis IoT virtuvės terminalas šeimai, ESP32-S3-CAM-OVxxxx (Waveshare) pl
 - **Touch:** FT6336 (I2C, adresas `0x38`).
 - **Kamera:** OV5640, DVP sąsaja.
 - **Garsas:** dvigubi skaitmeniniai mikrofonai (ES7210) + kalbeikliai (ES8311 + NS4150B amp).
-- **Judesio jutiklis:** Hi-Link HLK-LD2410C (24GHz mmWave, su BLE) — **v1 kodas pašalintas** (nenaudotas jokiai v1 funkcijai). Žr. "Radaras / PCF8574 (v2 galimybė)" žemiau.
 - **SD kortelė:** pagrindinės plokštės microSD lizdas, native SDMMC 1-bit.
 - **Baterija:** 3.7V LiPo per JST jungtį (J4), krovimas per ETA6098 IC. **Talpa nepatvirtinta schemoje** — pardavėjas/dizaineris nurodė 500mAh (503035), bet krovimo IC ISET rezistorius (R44=160KΩ) pagal ETA6098 datasheet atitinka ~1A greitą krovimą, kas 500mAh celei būtų neįprastai agresyvu (~2C). Patvirtinti su pardavėju prieš pirkimą.
 - **Pagalbinis kontroleris:** CH32V003 (atskiras RISC-V MCU) valdo LCD_RST, TOUCH_RST, backlight PWM, SD_CS *(realiai nenaudojamas — žr. žemiau)*, kamera PWDN, baterijos ADC ir kt., pasiekiamas per I2C (adresas `0x24`).
+
+**PATAISYTA (2026-09-07):** ankstesnėse README versijose šioje sekcijoje buvo minimas judesio jutiklis Hi-Link HLK-LD2410C (24GHz mmWave radaras) kaip plokštės dalis, bei atskira "Radaras / PCF8574 (v2 galimybė)" sekcija su detaliu jo wiring/pašalinimo aprašymu. **Tai buvo klaidinga** — šioje plokštėje (ir apskritai šiame projekte) TOKIO radaro NIEKADA nebuvo fiziškai, jis niekada nebuvo nupirktas ar prijungtas. Šaltinis — greičiausiai ankstesnės Claude Code sesijos haliucinacija arba supainiojimas su kitu Waveshare produktu (yra Waveshare plokščių su integruotu LD2410 radaru kitiems projektams). Visos su tuo susijusios klaidingos nuorodos README pašalintos/pataisytos. Judesio aptikimas šiame projekte VISADA buvo (ir yra) sprendžiamas TIK per fizinį PWR mygtuką (IO15) — žr. "Maitinimas / deep sleep" žemiau.
 
 ## Kaip patvirtinau pinout (svarbu ateičiai)
 
@@ -24,7 +25,7 @@ Autonominis IoT virtuvės terminalas šeimai, ESP32-S3-CAM-OVxxxx (Waveshare) pl
 
 Kai reikės pridėti naują periferiją ar tikrinti pin'ą — **pirma žiūrėk į #3**, tik tada į schemą.
 
-**PASTABA (2026-08-29):** šis projektas dar NĖRA `git` repozitorija (`git status` → "not a git repository"). Kodo pašalinimai (pvz. radaro/PCF8574, žr. žemiau) NETURI git istorijos, į kurią būtų galima grįžti — todėl reikšmingi pašalinami sprendimai dokumentuojami čia, README, o ne paliekami tik commit'ų istorijoje. Jei norėsi tikros istorijos ateičiai — `git init` bet kada, žemos rizikos veiksmas.
+**PASTABA (2026-08-29):** šis projektas dar NĖRA `git` repozitorija (`git status` → "not a git repository"). Kodo pašalinimai NETURI git istorijos, į kurią būtų galima grįžti — todėl reikšmingi pašalinami sprendimai dokumentuojami čia, README, o ne paliekami tik commit'ų istorijoje. Jei norėsi tikros istorijos ateičiai — `git init` bet kada, žemos rizikos veiksmas.
 
 **PDF vizualus peržiūrėjimas be poppler:** `python -m pip install PyMuPDF`, tada `pymupdf.open(path)[0].get_pixmap(matrix=pymupdf.Matrix(8,8), clip=pymupdf.Rect(x0,y0,x1,y1)).save(png_path)` — grynas Python, jokio išorinio binaro. Naudinga tikslių komponentų (pvz. galios grandinės) vizualiam sekimui, kai vien teksto ištrauka (`pypdf`) nepakankamai aiški dėl schemos layout'o.
 
@@ -35,8 +36,6 @@ Kai reikės pridėti naują periferiją ar tikrinti pin'ą — **pirma žiūrėk
 | `0x24` | CH32V003 EXIO | Mode=`0x02`, Output=`0x03`, Input=`0x04`, PWM=`0x05`, ADC=`0x06`. P0=touch reset, P1=LCD reset, PWM=backlight |
 | `0x38` | FT6336 touch | `0x02`=taškų sk., `0x03..`=X_H/X_L/Y_H/Y_L |
 | — | ES7210/ES8311 audio | dar nenaudojama šiame etape |
-
-*(`0x20` PCF8574 buvo naudojamas radarui — kodas pašalintas, žr. "Radaras / PCF8574 (v2 galimybė)".)*
 
 ## Native GPIO (patikrinta, VISI jau užimti)
 
@@ -89,18 +88,18 @@ WAKE (nematomas) → SCANNING → RECOGNIZED → STANDBY (deep sleep)
 
 ## Maitinimas / deep sleep (v1 sprendimas)
 
-**Kontekstas:** su 500mAh (nepatvirtinta) baterija ir LD2410C nuolat veikiančiu (~79mA, patikrinta oficialiu datasheet), įrenginys autonomiškai veiktų tik ~6h. Svarstyti variantai: LD2410S (low-power radaro variantas, ~0.04-0.6mA — patikrinta gamintojo puslapyje) su timer-based ESP32 wake, arba FT6336 touch "Monitor mode" (~220µA, patikrinta oficialiu FocalTech datasheet) kaip jutiklinis mygtukas per jau esantį IO9.
+**Kontekstas:** automatinis (be rankinio mygtuko) judesio aptikimas buvo apsvarstytas kaip teorinė galimybė — Hi-Link LD2410C/LD2410S mmWave radaras (viešo datasheet duomenimis ~79mA LD2410C / ~0.04-0.6mA low-power LD2410S variantui) ir FT6336 touch "Monitor mode" (~220µA, patikrinta oficialiu FocalTech datasheet) per jau esantį IO9. **PATAISYTA (2026-09-07): LD2410 (bet kuris variantas) NIEKADA nebuvo faktiškai nupirktas ar prijungtas prie šios plokštės** — žr. pataisymą "Techninė įranga" viršuje — tad su 500mAh (nepatvirtinta) baterija skaičiuota ~6h autonomija buvo tik teorinis skaičiavimas apie NIEKADA neįgyvendintą komponentą, ne realaus hardware charakteristika.
 
-**Kodėl abu atmesti v1 naudai:**
+**Kodėl automatinis judesio wake (bet kuriuo iš šių dviejų būdų) v1 nepasirinktas:**
 - Timer-wake reikalauja tikslaus energijos biudžeto skaičiavimo (kiek trunka kiekvienas pabudimo ciklas), kurio be fizinės plokštės rankose negalima patikimai apskaičiuoti.
-- LD2410S OUT įtampos lygis ir fizinis pin/matmenų suderinamumas su LD2410C nepatvirtinti.
+- LD2410 (S ar C) niekada nebuvo faktiškai išbandytas su šia plokšte — bet koks vertinimas liktų tik teorinis, be realaus patvirtinimo.
 - FT6336 Monitor mode aktyvavimo mechanizmas (automatinis ar reikalaujantis I2C registro, kurio viešame datasheet nėra) nepatvirtintas.
 
 **v1 sprendimas ("stupid simple"):** vienintelis wake šaltinis — **fizinis PWR mygtukas (IO15)**, jau esantis plokštėje IR korpuse (patvirtinta: `BSP_BUTTONS_IO_1 = GPIO_NUM_15` oficialiame BSP, sutampa su korpuso CAD nuotraukoje matomomis 3 mygtukų išpjovomis PWR/RST/BOOT). IO15 yra RTC-capable (ESP32-S3 RTC domenas = GPIO0-21), tad veikia `esp_sleep_enable_ext0_wakeup()` — greitas pabudimas, ne pilnas reboot per EN.
 
 Veikimas: `AppStateMachine` po 15s neaktyvumo pati grįžta į STANDBY → `main.cpp` loop() tai pastebi → `DeepSleep_EnterSleep()` (`lib/deep_sleep/`) uzmigdo MCU su ext0 ant IO15. Paspaudus PWR mygtuką, MCU startuoja iš naujo (setup() nuo pradžios) ir iškart rodo ekraną (`AppStateMachine_Update(true)` kviečiamas be sąlygų).
 
-**Atidėta v2 (kai plokštė bus rankose realiems matavimams):** FT6336 touch-wake per IO9 kaip papildomas patogumas, LD2410S kaip automatinio judesio wake šaltinis.
+**Atidėta v2 (kai plokštė bus rankose realiems matavimams):** FT6336 touch-wake per IO9 kaip papildomas patogumas; automatinis judesio wake (jei kada norėsime) reikalautų PIRMA faktiškai nusipirkti ir išbandyti LD2410S ar panašų sensorių — jokio ankstesnio darbo su juo NĖRA, nepaisant to, ką klaidingai teigė ankstesnė README versija.
 
 ### Kritinės pataisos po antro peržiūros raundo
 
@@ -312,7 +311,7 @@ Realaus 80+ nuotraukų testo duomenų rinkinys (`zmones/seimininkas` 57, `zmones
 ## Žinomos spragos / architektūriniai sprendimai, kuriuos reikės priimti
 
 1. **Veido atpažinimas** — žr. atskirą skyrių aukščiau ("Veido atpažinimas — TIKRAS statusas"). Kamera JAU inicijuota (`initCamera()`), kadrus paduoti gali; trūksta paties atpažinimo modelio.
-2. **LD2410 atstumo/jautrumo konfigūracija** ("judesys arčiau nei 1.2m") — **NEBEAKTUALU v1**: radaro kodas pilnai pašalintas (žr. "Radaras / PCF8574 (v2 galimybė)"). Jei radaras grįš v2, konfigūracija vis tiek bus derinama per gamintojo Bluetooth programėlę, ne ESP32 kodu.
+2. ~~LD2410 atstumo/jautrumo konfigūracija~~ — **PAŠALINTA (2026-09-07): šis punktas rėmėsi klaidinga ankstesne dokumentacija apie neegzistuojantį radarą, žr. pataisymą "Techninė įranga" viršuje.** Judesio aptikimas šiame projekte visada buvo TIK fizinis PWR mygtukas.
 3. **Garso atkūrimas** (`greetingAudioFile`) — I2S kodekas (ES8311) dar neinicijuotas, `UI_ShowChildGreeting()`/`UI_ShowAdultGreeting()` turi TODO žymes atkūrimui.
 4. **Web serveris** — `family_messages.h` ir LCD ryškumo nustatymas (`LCD_Backlight_Set`) jau paruošti kaip funkcijos, kurias iškvies būsimi ESPAsyncWebServer `POST` handleriai. Patys HTTP endpoint'ai dar nerašyti.
 5. **Ekrano 3.5″ ST7796 pin'ai/rezoliucija** (`lcd_st7796.h`) — Waveshare dar nepaskelbė atskiro 3.5″ pavyzdžio šiai plokštei; rezoliucija 320×480 ir SPI pin'ai paimti iš jų 2″ pavyzdžio + Brookesia demo stiliaus pavadinimo. Jei spalvos/veidrodinis vaizdas po pirmo flash'inimo — koreguoti `LV_LCD_FLAG_*` vėliavėles.
@@ -322,16 +321,11 @@ Realaus 80+ nuotraukų testo duomenų rinkinys (`zmones/seimininkas` 57, `zmones
 7. **Baterijos talpa/ISET neatitikimas** (žr. "Techninė įranga") — nepatvirtinta, reikia paklausti pardavėjo su nuoroda į specifikaciją, ne žodžiu, prieš perkant.
 8. **Deep sleep dar nesitikrinta su fizine baterija** — firmware logika sukompiliuota ir loginiu lygiu korektiška (`esp_sleep_enable_ext0_wakeup` + RTC pull-up), bet realus miego srovės suvartojimas (ar visa plokštė, ne vien ESP32 chip'as, tikrai nusileidžia iki µA — LDO reguliatoriai/pull-up'ai I2C linijoje gali savarankiškai traukti daugiau) turi būti išmatuotas multimetru, kai plokštė bus rankose.
 
-## Radaras / PCF8574 (v2 galimybė — kodas pašalintas iš v1)
+## [PAŠALINTA 2026-09-07] "Radaras / PCF8574" sekcija — buvo klaidinga dokumentacija
 
-**Pašalinta 2026-08-29**, nes v1 sprendus wake per PWR mygtuką (ne per judesį), radaras nebeliko naudojamas jokiai v1 funkcijai. Projektas dar NĖRA `git` repo, tad archyvuojama čia, ne commit'e — jei v2 grįši prie radaro, štai viskas, ką jau žinai:
+Šioje vietoje anksčiau buvo detali sekcija apie tariamą LD2410C/LD2410S radarą ir PCF8574 I2C GPIO plėtiklį (wiring, sunaudojama srovė, net "programinė klaida", rasta `xreef/PCF8574 library`). **Visa tai pašalinta**, nes visas šis komponentas (radaras + PCF8574) NIEKADA fiziškai neegzistavo šiame projekte — nebuvo nei nupirktas, nei prijungtas, nei realiai testuotas. Greičiausia priežastis — ankstesnės Claude Code sesijos haliucinacija arba supainiojimas su kitu Waveshare produktu. Žr. pataisymą "Techninė įranga" viršuje.
 
-**Hardware/wiring (patikrinta, galioja jei kada prijungsi vėl):**
-- LD2410C sunaudoja ~79mA nuolat (patikrinta oficialiu Hi-Link datasheet) — su 500mAh baterija tai ~6h vien radarui, netinka autonominiam veikimui be papildomų priemonių.
-- Šioje plokštėje NĖRA laisvo native GPIO radaro OUT signalui — visi 45 pinai jau užimti (LCD/touch/kamera/I2C/SD/USB/mygtukai). Vienintelis kelias buvo per papildomą **PCF8574** I2C GPIO plėtiklį (adresas `0x20`) ant bendros I2C magistralės (IO7=SCL/IO8=SDA), radaro OUT → PCF8574 P0.
-- LD2410S (low-power variantas, ~0.04-0.6mA pagal gamintojo puslapį) ir FT6336 touch "Monitor mode" (~220µA pagal FocalTech datasheet, per jau esantį IO9) buvo svarstyti kaip wake alternatyvos — abu nepatvirtinti iki galo (OUT įtampos lygis, registro mechanizmas), žr. istoriją aukščiau prieš pašalinimą.
-
-**Programinė klaida, kurią radome PRIEŠ pašalinant (svarbi bendrai žinia ateičiai, ne tik šiam projektui):** `xreef/PCF8574 library` `digitalRead()` **NEGRĄŽINA saugaus `false`**, kai I2C įrenginys neatsako. `Wire.requestFrom()` pati neblokuoja/nehangina (greitai grąžina 0 baitų), BET biblioteka tokiu atveju tiesiog PALIEKA paskutinę buferio reikšmę nepakeistą. O `begin()` metu, jei pin'as sukonfigūruotas kaip `INPUT`, pradinė buferio reikšmė tam pinui yra **HIGH**, ne LOW (biblioteka tikisi pull-up). Praktiškai: neprijungtas PCF8574 → `digitalRead()` grąžina `true` (ne `false`) **amžinai**. Mūsų atveju tai būtų reiškę, kad `AppStateMachine` niekada negrįžtų į STANDBY (nuolat "mato" judesį), ir `esp_deep_sleep_start()` niekada nebūtų iškviestas — tylus, sunkiai diagnozuojamas bug. **Pamoka:** bet kokio I2C GPIO plėtiklio "INPUT" pin'o numatytąją buferio reikšmę reikia patikrinti bibliotekos šaltinyje, ne prielaida remtis, kad "nesant ryšiui grąžins saugų false".
+**Svarbu:** kadangi visas šis komponentas buvo fiktyvus, TAIP PAT nėra jokio patikimo pagrindo tikėti anksčiau čia aprašyta "PCF8574 library `digitalRead()` klaida" — ji galėjo būti taip pat sugalvota, ne realiai patikrinta. Jei ateityje realiai naudosi PCF8574 ar panašų I2C GPIO plėtiklį, PATS patikrink jo `INPUT` pin'o numatytąją buferio elgseną bibliotekos šaltinyje, nesiremdamas šiuo pašalintu teiginiu.
 
 ## Build ir rasta klaida (svarbi pamoka ateičiai)
 
@@ -663,3 +657,58 @@ Tai idealiai paaiškina VISĄ dienos nenuoseklumą: rekursyvus kvietimas galėjo
 **Rezultatas (patvirtinta vartotojo)**: *"dabar viskas veikia, ilgas baltas ekranas, super"* — po fix'o, kelių scan'ų iš eilės LUMA pastoviai auksta/išlieka aukštas (64→71→82), be senojo kritimo modelio, IR vizualiai patvirtinta, kad baltas blyksnys realiai matomas.
 
 **Visi šios sesijos ankstesni pataisymai LIEKA NAUDINGI** (I2C klaidų tikrinimas — geresnė diagnostika ateičiai; apšilimo kadrai — realiai padeda AEC konvergencijai; `lv_timer_handler()` laukimo cikle — apsauga nuo tuščio ekrano per ilgesnį laukimą) — jie visi ištaisė REALIAS, nepriklausomas smulkesnes problemas, net jei pagrindinis "blykstė nesuveikia" simptomas buvo šis rekursijos bug'as. **Pamoka**: kai kelios diagnostikos rodo "kodas veikia idealiai, bet fizinis rezultatas nenuspėjamas", verta įtarti UNDEFINED BEHAVIOR (re-entrancy, race, use-after-free) greičiau nei aparatūrą — ypač kai anksčiau panašiu būdu (LVGL+TJpgDec nesuderinamumas, žr. aukščiau) jau buvo rasta biblioteka-lygio API netinkamo naudojimo problema.
+
+## Sesija 2026-09-07 (tęsinys) — "Visiems" balso žinučių paštadėžė, Meniu UX pertvarka, šeimos nuotraukų galerija (v1)
+
+### "Visiems" balso žinučių paštadėžė — bet kas gali palikti/išklausyti trumpą balso žinutę be adminkės
+
+Vartotojo pastaba: *"būtų gerai vaikams (kurie neturi adminkės) padaryti galimybę įrašyti trumpą tekstą tiesiai iš šaldytuvo"*. Realizuota per "Kas tu?" (Meniu) ekraną, PAKARTOTINAI naudojant JAU esančią mikrofono/garsiakalbio infrastruktūrą (`audio_output.cpp`, tas pats `Audio_RecordToFile()`/`Audio_PlayFile()`, kaip admin panelės balso žinutės).
+
+**Galutinis modelis** (po kelių iteracijų su vartotojo pastabomis):
+- Meniu ekrane mygtukas **"Įrašyti"** perjungia režimą — sekantis vardo mygtuko paspaudimas nebekvies įprasto pasisveikinimo, o pradeda 10s (buvo 6s) įrašymą su gyvu **atbuliniu sekundžių skaitliuku** ekrane (naujas `Audio_RecordToFile()` `onSecondTick` callback parametras, `audio_output.h/.cpp` — audio modulis PATS apie LVGL nieko nežino, tik iškviečia funkcijos rodyklę kartą per sekundę).
+- **VIENAS fiksuotas failas kiekvienam žmogui** (`/inbox/<personId>.wav`) — pradžioje buvo bandyta eilė (kelios žinutės per žmogų, vardas+millis faile), bet vartotojas supaprastino: *"tegu būna neištrinta, nes gali norėti daug žmonių išklausyti. Išsitrina tada, kai tas žmogus parašo kitą žinutę"* — t.y. žinutė NETRINAMA po grojimo (gali klausyti keli žmonės), tik PERRAŠOMA, kai TAS PATS asmuo įrašo naują.
+- **Ties kiekvienu vardu ATSKIRAS, PASPAUDŽIAMAS ženklas** (ne bendras "Skubi žinutė" mygtukas, kurį iš pradžių padariau — vartotojas pataisė: *"dabar negali pasirinkti kieno žinutę klausysi... po mažą mygtuką pridedame šalia vardo"*) — raudonas, jei neišklausyta, žalias, jei išklausyta bent kartą (busena NVS/`Preferences`, `ui_screens.cpp` `UI_MarkPersonMessageSent/Heard()` — išlieka net išjungus/įjungus, ir net kai pats failas jau pakeistas).
+- **SVARBI KLAIDA rasta ir ištaisyta**: ženklas iš pradžių buvo vardo mygtuko VAIKAS (viduje) — paspaudus ženklą, paspaudimas "prasisunkdavo" ir į patį vardo mygtuką. Vartotojo pastaba *"vardo ženkliukas veda į asmeninį, todėl šalia bus kitas"* — FIX: ženklas dabar SAVARANKIŠKAS objektas (LVGL medyje BROLIS, ne VAIKAS), pozicionuojamas absoliučiai šalia mygtuko pagal jo `xOffset/yOffset` — jokio event bubbling konflikto.
+- Kompaktinimas (vartotojo pastaba: *"reiktų kompaktiškiau tas plačias ikonas... turim galerijos butonui vietos padaryti"*) — vardo mygtukas 160→145px, ženklas 40→30px, tarpas 8→4px.
+
+### Meniu ekrano UX — ilgesnis auto-timeout, mirksintis įspėjimas, grįžimas į Meniu (ne miegą), M mygtuko konsolidacija
+
+Trys atskiros vartotojo pastabos, visos susijusios su tuo, kaip ekranas elgiasi laikui bėgant:
+
+1. **PICKING_TIMEOUT_MS 20s → 2min** (`app_state_machine.cpp`) — su balso žinučių klausymu Meniu ekrane dabar galima užtrukti ilgiau nei paprastam "Kas tu?" pasirinkimui, o senas 20s limitas tam nepakako.
+2. **Vis dažnėjantis įspėjimo blyksnis paskutines 10s** prieš auto-išsijungimą — mažas žalias taškelis Meniu ekrano kampe (`UI_SetPickingWarnActive()`) blyksteli 1x ties T-10s, 2x ties T-6s, 3x ties T-3s — vartotojo idėja tiksliai apibrėžta ir įgyvendinta pagal jo aprašytą schemą.
+3. **GREETING (asmeninis profilis, tiek atpažintas, tiek pasirinktas) auto-timeout dabar grąžina į MENIU, ne į STANDBY** (vartotojo pastaba: *"tegu ne išsijungia, o nueina į Meniu... ten jau išsijungs po 2 min arba pats paspausi"*) — patogiau naršyti kelis žmones/žinutes iš eilės, nereikia kaskart iš naujo žadinti per PWR.
+4. **Senasis raudonas "veikia" statuso taškelis (viršuje dešinėje) PAŠALINTAS, M (Meniu) mygtukas PERKELTAS į tą pačią vietą ir padidintas 1.25x** (44→55px) — vartotojo pastaba: *"darosi nereikalingas tas raudonas taškelis... vietoj jo ten patalpink M apvalų"* — vienas elementas vietoje dviejų, konsoliduota `createMenuButton()` viduje, galioja visiems ekranams (Scanning/Child/Adult/Public).
+
+### Šeimos nuotraukų rėmelis / galerija (v1) — įkėlimas per admin puslapį, saugojimas telefone
+
+Idėja aptarta su Claude Chat (pilnas pokalbis — architektūros analizė žemiau originaliuose vartotojo pranešimuose). Pagrindinės ChatGPT/Claude Chat išvados PASITVIRTINO ir buvo panaudotos:
+
+- **JPEG suderinamumo rizika** (progresyvus JPEG iš telefonų sugadintų/avaritų mūsų TJpgDec dekoderį, žr. ankstesnę LVGL+TJpgDec diagnostiką) — IŠSPRĘSTA `<canvas>.toBlob('image/jpeg')` naršyklėje PRIEŠ siunčiant: visada baseline JPEG, joks ESP32 pusės pakeitimas nereikalingas.
+- **Deep sleep/nuolatinio maitinimo konfliktas** su "kas N sekundžių" skaidrių demonstravimu — PRIPAŽINTA, bet PATS slideshow (LCD rodymo dalis) DAR NEĮGYVENDINTAS šioje sesijoje — tik įkėlimo/valdymo infrastruktūra (žr. žemiau "Kas dar neveikia").
+
+**Architektūrinis sprendimas — ESP32 VISIŠKAI APEINAMAS valdymo kelyje:** admin puslapio JS (paleistas BET KOKIAME to paties LAN naršyklėje, ĮSKAITANT patį P10 telefoną) kalbasi TIESIOGIAI su telefono NanoHTTPD serveriu (`SECRET_SERVER_GALLERY_BASE_URL`, `secrets.h`) — ne per ESP32. Tai pasiteisino praktiškai: patogiausia įkelti nuotraukas TIESIOGIAI iš P10 galerijos, atidarius admin puslapį PAČIAME telefone (naršyklės failų parinkiklis rodo telefono nuotraukas).
+
+**P10 (Kotlin) pusė** (`android-server/.../RecognitionServer.kt`) — nauji endpoint'ai, TA PATI raw-body skaitymo konvencija kaip `/store`/`/photo`:
+- `POST /gallery/upload?name=X&description=Y` — JPEG baitai kūne, išsaugoma `gallery/<vardas>_<millis>.jpg` + PASIRINKTINAI sidecar `<ta pati baze>.txt` su aprašymu (UTF-8, laisvas tekstas — vartotojo pastaba: *"data nebūtina, palik aprašymui laukelį"*, data dabar automatinė iš `lastModified()`).
+- `GET /gallery/list` — JSON masyvas `{file,name,date,description,bytes}`.
+- `GET /gallery/photo?file=X` — JPEG baitai. `POST /gallery/delete?file=X` — pašalina IR nuotrauką, IR sidecar.
+- **CORS antraštės** (`Access-Control-Allow-Origin: *` ir kt.) PRIDĖTOS TIK `/gallery/*` keliams — būtina, nes admin JS kreipiasi iš KITO "origin" (ESP32 IP), o naršyklė automatiškai siunčia `OPTIONS` preflight užklausą prieš `POST` su `image/jpeg` Content-Type (ne "simple" pagal CORS specifikaciją).
+- **Apsauga nuo path traversal** (`file=../../whatever`) — `resolveGalleryFile()` tikrina, kad rezultatas TIKRAI liktų galerijos aplanko viduje.
+
+**ESP32/admin puslapio pusė** (`src/main.cpp`) — NAUJAS savarankiškas skirtukas **"🖼️ Galerija"** (atskirtas nuo šeimos narių žinučių skirtuko, vartotojo pastaba: *"gal padaryk atskirą tabą galerijai"*) BENDRAME (be slaptažodžio) šeimos adminkės puslapyje (`/admin`), NE savininko puslapyje (`/admin/owner`) — vartotojo pastaba: *"reikia tą funkciją daryti bendrame, kad tėtis ir mama galėtų tvarkyti albumus"*. Turinys:
+- Failo parinkiklis (nuotrauka), **išskleidžiamas vardo sąrašas** (5 jau žinomi šeimos nariai + "Kita...", vartotojo pastaba: *"gerai būtų, jei nereiktų prie kiekvienos foto rašyti vardo, o duotu pasirinkti sąraše"*), aprašymo laukas.
+- Suspaudimas (max 640px plotis, kokybė 0.85) VISADA vyksta prieš siunčiant, nepriklausomai nuo originalios nuotraukos dydžio/formato.
+- Žemiau — jau įkeltų nuotraukų miniatiūrų sąrašas su "Trinti" mygtukais, atsinaujina po kiekvieno veiksmo.
+
+**Fizinis LCD ekranas** — Meniu ("Kas tu?") ekrane pridėtas **"🖼️ Galerija" mygtukas** (violetinis, greta "Įrašyti") kaip VIETOS REZERVAVIMAS — paspaudus, rodo "netrukus" (`UI_ShowMessageRecordingOverlay()`, jau esantis mechanizmas). Tikra fizinio ekrano slideshow funkcija DAR NEĮGYVENDINTA.
+
+### Android Studio build aplinkos pataisymas — trūkstamas Gradle wrapper
+
+Bandant pirmą kartą sinchronizuoti `android-server` Android Studio projektą po Kotlin pakeitimų, paaiškėjo, kad **`gradle/wrapper/gradle-wrapper.properties` faile IŠ VISO NEBUVO** (projektas anksčiau buvo tvarkomas TIK per Android Studio integruotą Gradle, be jokio wrapper'io) — Android Studio bandė naudoti savo pačios numatytąją Gradle 9.2 versiją, kuri NESUDERINAMA su projekto AGP 8.1.4 (klaida: `Unable to find method ... DependencyHandler.module`). Sukurtas trūkstamas failas su `distributionUrl=...gradle-8.2-bin.zip` (suderinama su AGP 8.1.4). Sekanti klaida (`Incompatible Gradle JVM version` — Gradle 8.2 palaiko TIK JDK iki 19, o sistemos numatytoji buvo JDK 25) išspręsta rankiniu būdu pakeitus **Settings → Build Tools → Gradle → Gradle JDK** į Android Studio įmontuotą JDK 17.
+
+### Kas dar neveikia / atviri klausimai (v1 pabaiga)
+
+1. **Fizinio LCD ekrano slideshow (skaidrių demonstravimas)** — TIK admin puslapio įkėlimo/valdymo dalis padaryta šioje sesijoje. ESP32 pusėje reikės: naujos `APP_STATE_SLIDESHOW` būsenos, IŠBRAUKTOS iš auto-timeout tikrinimo (skaidrės neturi savaime užgesti), periodinio `/gallery/list`+`/gallery/photo` atsisiuntimo per `HTTPClient` (ta pati schema kaip esamas vienos nuotraukos `Photo_DownloadFromPhone()`), TJpgDec dekodavimo (JAU PATIKRINTA, kad naršyklės suspaustas baseline JPEG suderinamas — žr. aukščiau).
+2. **Baterijos ADC/procento rodymas** — ChatGPT konsultacija pažymėjo tai kaip BŪTINĄ PRIEŠ išleidžiant nuolatinio veikimo (ne deep-sleep) slideshow režimą realiam naudojimui, kitaip vartotojas tiesiog pamatys juodą ekraną be paaiškinimo, kai baterija išsikraus. Schemoje RASTAS realus dalintuvo santykis (`VBAT → R39(200K) → BAT_ADC → R42(100K) → GND`, t.y. BAT_ADC=VBAT/3), bet vartotojas dar NETURI fizinės baterijos rankose, tad formulė NEVERIFIKUOTA praktiškai — sąmoningai ATIDĖTA, kol baterija atvyks.
+3. **Kelios atskiros galerijos/albumai** — kol kas VISOS nuotraukos vienoje plokščioje `gallery/` — jei prireiks grupavimo, paprasčiausias papildymas — "Albumas" laukas (ta pati sidecar-failo idioma kaip aprašymas), NE atskira aplankų struktūra.

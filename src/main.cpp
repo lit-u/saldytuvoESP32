@@ -628,6 +628,7 @@ static String buildAdminPage() {
             "</header>"
             "<div class='tabs'>"
             "<div class='tab active' id='tab-fridge' onclick=\"showTab('fridge')\">🧊 Šaldytuvas</div>"
+            "<div class='tab' id='tab-gallery' onclick=\"showTab('gallery')\">🖼️ Galerija</div>"
             "<div class='tab disabled' id='tab-home'>🏠 Namai</div>"
             "</div>"
             "<div class='panel active' id='panel-fridge'>";
@@ -682,8 +683,49 @@ static String buildAdminPage() {
         html += "</div>";
     }
 
-    html += "</div>"  // #panel-fridge
-            "<div class='panel' id='panel-home'>"
+    html += "</div>";  // #panel-fridge
+
+    // 2026-09-07 (vartotojo pastaba: "šeimos nuotraukų rėmelis" — idėja
+    // aptarta su Claude Chat; VELIAU: "reikia tą funkciją daryti bendrame,
+    // kad tėtis ir mama galėtų tvarkyti albumus", "gal padaryk atskirą tabą
+    // galerijai") — SAVO tabas/panele, ATSKIRAI nuo seimos nariu zinuciu,
+    // TYCIA sioje (be slaptazodzio) seimos adminkeje, ne savininko
+    // puslapyje, kad patogiausia butu BET KAM is seimos. JS kreipiasi
+    // TIESIOGIAI i telefona (SECRET_SERVER_GALLERY_BASE_URL), APEINANT
+    // ESP32 (abu tame paciame LAN). Kompresija (canvas.toBlob('image/jpeg'))
+    // vyksta NARSYKLEJE PRIES siunciant — visada baseline JPEG, tad joks
+    // progresyvaus JPEG suderinamumo klausimas net neatsiranda TJpgDec
+    // dekoderiui (kuris ji sugadintu/avaritu, zr. ankstesne LVGL+TJpgDec
+    // diagnostika README). "Data nebūtina, palik aprašymui laukelį"
+    // (vartotojo pastaba) — data dabar automatinė (įkėlimo laikas), o
+    // laisvas aprašymo tekstas saugomas serverio pusėje.
+    html += "<div class='panel' id='panel-gallery'>";
+    html += "<div class='card' style='border-left-color:#7E57C2'>";
+    html += "<h3 style='color:#7E57C2'>🖼️ Šeimos nuotraukų galerija</h3>";
+    html += "<input type='file' id='gallery-file' accept='image/*'>";
+    // 2026-09-07 (vartotojo pastaba: "gerai būtų, jei nereiktų prie kiekvienos
+    // foto rašyti vardo, o duotu pasirinkti sarase") — isskleidziamas sarasas
+    // is JAU ZINOMU seimos nariu (ta pati FamilyProfiles_Get() reiksme, kaip
+    // ir per-person kortelese virsuje), PLIUS "Kita..." laisvam vardui (nuotraukose
+    // gali buti ir kiti zmones/vietos, ne tik registruoti 5 seimos nariai).
+    html += "<label>Vardas</label><select id='gallery-name-select' onchange='onGalleryNameChange()' "
+            "style='width:100%;font-size:14px;border-radius:6px;border:1px solid #d5d9dd;padding:6px 8px;'>";
+    for (int gi = 1; gi < PERSON_COUNT; gi++) {
+        const PersonProfile &gp = FamilyProfiles_Get((RecognizedPerson)gi);
+        html += "<option value='" + escapeHtml(String(gp.publicName)) + "'>" + escapeHtml(String(gp.publicName)) + "</option>";
+    }
+    html += "<option value='__other__'>Kita...</option>";
+    html += "</select>";
+    html += "<input type='text' id='gallery-name-other' placeholder='Įveska vardą' style='display:none;width:100%;font-size:14px;"
+            "border-radius:6px;border:1px solid #d5d9dd;padding:6px 8px;margin-top:5px;'>";
+    html += "<label>Aprašymas (nebūtina)</label><textarea id='gallery-desc' rows='2' placeholder='pvz. Gimtadienis parke'></textarea>";
+    html += "<button class='save' type='button' id='gallery-upload-btn' onclick='galleryUpload()'>⬆️ Įkelti</button>";
+    html += "<div class='status' id='gallery-status'></div>";
+    html += "<div id='gallery-list' style='margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;'></div>";
+    html += "</div>";
+    html += "</div>";  // #panel-gallery
+
+    html += "<div class='panel' id='panel-home'>"
             "<p class='placeholder'>Netrukus — viso buto įrenginių valdymas.</p>"
             "</div>"
             // 2026-09-05 (vartotojo pastaba: "man reikia kitos [adminkes]")
@@ -704,7 +746,88 @@ static String buildAdminPage() {
             "function showTab(name){"
             "document.getElementById('panel-fridge').classList.toggle('active',name==='fridge');"
             "document.getElementById('tab-fridge').classList.toggle('active',name==='fridge');"
+            "document.getElementById('panel-gallery').classList.toggle('active',name==='gallery');"
+            "document.getElementById('tab-gallery').classList.toggle('active',name==='gallery');"
             "}"
+            "const GALLERY_BASE='" + String(SECRET_SERVER_GALLERY_BASE_URL) + "';"
+            // 2026-09-07 — canvas.toBlob('image/jpeg') VISADA grazina baseline
+            // JPEG (jokio progresyvaus koduotojo narsyklese) — sitas budas
+            // pasirinktas TIK del sios priezasties (zr. README diskusija su
+            // Claude Chat), ne vien dydzio mazinimui.
+            "function compressImage(file,maxWidth,quality){"
+            "return new Promise((resolve,reject)=>{"
+            "let img=new Image();"
+            "img.onload=()=>{"
+            "let scale=Math.min(1,maxWidth/img.width);"
+            "let w=Math.round(img.width*scale),h=Math.round(img.height*scale);"
+            "let canvas=document.createElement('canvas');"
+            "canvas.width=w;canvas.height=h;"
+            "canvas.getContext('2d').drawImage(img,0,0,w,h);"
+            "canvas.toBlob(b=>b?resolve(b):reject('canvas toBlob nepavyko'),'image/jpeg',quality);"
+            "};"
+            "img.onerror=()=>reject('nepavyko ikelti paveikslelio');"
+            "img.src=URL.createObjectURL(file);"
+            "});"
+            "}"
+            "function onGalleryNameChange(){"
+            "let sel=document.getElementById('gallery-name-select');"
+            "document.getElementById('gallery-name-other').style.display=(sel.value==='__other__')?'block':'none';"
+            "}"
+            "async function galleryUpload(){"
+            "let f=document.getElementById('gallery-file').files[0];"
+            "if(!f){alert('Pasirink nuotrauka');return;}"
+            "let sel=document.getElementById('gallery-name-select');"
+            "let name=(sel.value==='__other__')?document.getElementById('gallery-name-other').value.trim():sel.value;"
+            "if(!name){alert('Įveska vardą');return;}"
+            "let desc=document.getElementById('gallery-desc').value.trim();"
+            "let status=document.getElementById('gallery-status');"
+            "let btn=document.getElementById('gallery-upload-btn');"
+            "btn.disabled=true;status.textContent='Suspaudžiama...';"
+            "try{"
+            "let blob=await compressImage(f,640,0.85);"
+            "status.textContent='Siunčiama...';"
+            "let resp=await fetch(GALLERY_BASE+'/gallery/upload?name='+encodeURIComponent(name)+'&description='+encodeURIComponent(desc),"
+            "{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob});"
+            "let j=await resp.json();"
+            "status.textContent=j.ok?'Įkelta!':('Klaida: '+j.error);"
+            "document.getElementById('gallery-file').value='';"
+            "document.getElementById('gallery-name-other').value='';"
+            "document.getElementById('gallery-desc').value='';"
+            "galleryRefresh();"
+            "}catch(err){status.textContent='Klaida: '+err;}"
+            "btn.disabled=false;"
+            "}"
+            "async function galleryRefresh(){"
+            "let listDiv=document.getElementById('gallery-list');"
+            "listDiv.textContent='Kraunama...';"
+            "try{"
+            "let resp=await fetch(GALLERY_BASE+'/gallery/list');"
+            "let j=await resp.json();"
+            "listDiv.innerHTML='';"
+            "(j.items||[]).forEach(it=>{"
+            "let box=document.createElement('div');"
+            "box.style.cssText='text-align:center;width:100px;';"
+            "let img=document.createElement('img');"
+            "img.src=GALLERY_BASE+'/gallery/photo?file='+encodeURIComponent(it.file);"
+            "img.style.cssText='width:100px;height:75px;object-fit:cover;border-radius:6px;';"
+            "let label=document.createElement('div');"
+            "label.style.cssText='font-size:11px;color:#666;margin-top:2px;';"
+            "label.textContent=it.name+(it.description?(' — '+it.description):'')+' ('+it.date+')';"
+            "let delBtn=document.createElement('button');"
+            "delBtn.textContent='Trinti';"
+            "delBtn.style.cssText='font-size:11px;padding:2px 6px;margin-top:2px;';"
+            "delBtn.onclick=async()=>{"
+            "if(!confirm('Trinti '+it.name+'?'))return;"
+            "await fetch(GALLERY_BASE+'/gallery/delete?file='+encodeURIComponent(it.file),{method:'POST'});"
+            "galleryRefresh();"
+            "};"
+            "box.appendChild(img);box.appendChild(label);box.appendChild(delBtn);"
+            "listDiv.appendChild(box);"
+            "});"
+            "if(!j.items||j.items.length===0)listDiv.textContent='(dar nėra nuotraukų)';"
+            "}catch(err){listDiv.textContent='Klaida kraunant: '+err;}"
+            "}"
+            "galleryRefresh();"
             "async function recordViaDevice(p){"
             "let remaining=" + String((int)(MIC_RECORD_DURATION_MS / 1000)) + ";"
             "document.getElementById('rec-mic-'+p).disabled=true;"

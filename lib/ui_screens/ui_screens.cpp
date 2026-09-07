@@ -6,6 +6,7 @@
 #include "audio_output.h"
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <esp_heap_caps.h>
 #include <string.h>
 
@@ -21,6 +22,33 @@ static lv_obj_t *s_scanningLabel = nullptr;
 static lv_obj_t *s_scanningPhoto = nullptr;  // 2026-09-06: "ka bandome atpazinti" (zr. UI_ScanningShowPhoto)
 static void (*s_onPersonSelected)(RecognizedPerson) = nullptr;
 static void (*s_onMenuPressed)() = nullptr;
+static void (*s_onRecordMessagePicked)(RecognizedPerson) = nullptr;
+static void (*s_onPersonBadgeTapped)(RecognizedPerson) = nullptr;
+static lv_obj_t *s_msgOverlay = nullptr;
+static lv_obj_t *s_msgOverlayLabel = nullptr;
+static lv_obj_t *s_inboxBtn = nullptr;
+// 2026-09-07 (vartotojo pastaba: "ant zmogaus profilio po vardo ikonele,
+// kad tas zmogus irase bendra zinute" — VELIAU: "dabar negali pasirinkti
+// kieno zinute klausysi... po maza mygtuka pridedame salia vardo... nereiks
+// mygtuko 'Skubi žinutė'") — mazas raudonas/zalias PASPAUDZIAMAS taskas ant
+// KIEKVIENO vardo mygtuko — paspaudus, groja TIK TO zmogaus (pagal
+// personId, uzkoduota faile) laukiancia "/inbox/" zinute. Indeksuojama
+// TIESIOGIAI pagal RecognizedPerson reiksme (0=PERSON_UNKNOWN nenaudojamas).
+static lv_obj_t *s_nameBadges[PERSON_COUNT] = {nullptr};
+static lv_obj_t *s_pickerWarnDot = nullptr;  // 2026-09-07: "Kas tu?" laiko baigimosi blyksnis (zr. UI_SetPickingWarnActive())
+// 2026-09-07 (vartotojo pastaba: "Jei neišklausyta tai raudona, jei
+// išklausyta nors vieną kartą - žalia" + "tegu būna neištrinta, nes gali
+// norėti daug žmonių išklausyti. Išsitrina tada, kai tas žmogus parašo
+// kitą žinutę") — busena saugoma NVS (Preferences), NEPRIKLAUSOMAI nuo to,
+// ar failas fiziskai dar egzistuoja "/inbox/" (dabar VISADA egzistuoja, kol
+// tas zmogus neirase naujos, perrasančios failo — zr. app_state_machine.cpp
+// onMessageSenderPicked()/onPersonBadgeTapped()).
+static Preferences s_inboxStatePrefs;
+enum class InboxBadgeState : uint8_t { NONE = 0, UNHEARD = 1, HEARD = 2 };
+
+static String inboxStateKey(RecognizedPerson person) {
+    return String("st") + (int)person;
+}
 
 static const char *ADULT_COMPLIMENTS[] = {
     "Gražiai atrodai šiandien!",
@@ -29,25 +57,6 @@ static const char *ADULT_COMPLIMENTS[] = {
     "Šeima tavimi didžiuojasi!",
 };
 #define ADULT_COMPLIMENTS_COUNT (sizeof(ADULT_COMPLIMENTS) / sizeof(ADULT_COMPLIMENTS[0]))
-
-// "Veikia" indikatorius (vartotojo pastaba 2026-09-05: fizine raudona LED
-// P6 ant CH32V003 EXIO NEUZSIDEGA realiame hardware, o net jei uzsidegtu,
-// nezinia, ar korpusas turi jai skyle — TAD virtualus raudonas taskas
-// EKRANE, virsuje desineje, kurio VISADA matomas per korpuso ekrano langa).
-// Rodomas TIK "pabudusiuose" ekranuose (SCANNING/GREETING), NE STANDBY —
-// atitinka ta pati "dezute dirba" prasme, kuria turejo turėti fizine LED.
-static lv_obj_t *createStatusDot(lv_obj_t *parent) {
-    lv_obj_t *dot = lv_obj_create(parent);
-    lv_obj_remove_style_all(dot);
-    lv_obj_set_size(dot, 16, 16);
-    lv_obj_set_style_bg_color(dot, lv_palette_main(LV_PALETTE_RED), 0);
-    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(dot, LV_ALIGN_TOP_RIGHT, -14, 14);
-    return dot;
-}
 
 static void menuButtonEventCb(lv_event_t *e) {
     (void)e;
@@ -59,14 +68,17 @@ static void menuButtonEventCb(lv_event_t *e) {
 // iskart soka i 5 pasirinkimus vos paspaudus". Rodomas VISUOSE
 // "pabudusiuose" ekranuose (SCANNING/GREETING/PUBLIC) — NE STANDBY (ekranas
 // tamsus) ir NE pacio PICKER ekrane (jis PATS jau yra tas meniu).
-// 2026-09-05: perkeltas i VIRSU KAIRE (buvo apacioje, uzdengdavo busenos
-// teksta) — dabar apvalus, tik raide "M", kad uztektu mazai vietos.
+// 2026-09-07 (vartotojo pastaba: "darosi nereikalingas tas raudonas
+// taškelis dešinėje viršuje. Vietoj jo ten patalpink M apvalų (padidink
+// 1/4)") — senasis "Veikia" indikatorius (createStatusDot(), raudonas
+// taskas VIRSUJE DESINEJE) PASALINTAS — VIETOJ jo cia PERKELTAS SIS
+// mygtukas (buvo VIRSUJE KAIRE), 1.25x didesnis (44->55).
 static void createMenuButton(lv_obj_t *parent) {
     lv_obj_t *btn = lv_button_create(parent);
-    lv_obj_set_size(btn, 44, 44);
+    lv_obj_set_size(btn, 55, 55);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), 0);
-    lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 14, 14);
+    lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -14, 14);
     lv_obj_add_event_cb(btn, menuButtonEventCb, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, "M");
@@ -149,10 +161,43 @@ static void nameButtonEventCb(lv_event_t *e) {
     if (s_onPersonSelected) s_onPersonSelected(person);
 }
 
+// 2026-09-07 — "Palikti žinutę" mygtukas TAME PACIAME "Kas tu?" ekrane:
+// paspaudus, PERJUNGIAMA busena — sekantis vardo mygtuko paspaudimas
+// nebekvies iprasto sveikinimo (s_onPersonSelected), o s_onRecordMessagePicked
+// (app_state_machine.cpp pradeda irasyma "nuo sito zmogaus"). Busena
+// AUTOMATISKAI atsistato i normalu (sveikinimo) rezima kiekviena karta, kai
+// UI_ShowNamePicker() vel iskvieciamas is naujo (zr. app_state_machine.cpp
+// enterPicking()/onMenuPressed()) — jokio persistuojancio "uzstrigimo" rizikos.
+static void recordMessageModeBtnEventCb(lv_event_t *e) {
+    (void)e;
+    s_onPersonSelected = s_onRecordMessagePicked;
+}
+
+// 2026-09-07 (vartotojo pastaba: "Ar liko vietos 'Galerija' butonui?" ->
+// pasirinkta "1": pridek DABAR kaip vietos rezervavima) — TIK placeholder,
+// nes fizinio ekrano skaidrių demonstravimo (slideshow) funkcija dar
+// nesukurta. Naudoja JAU ESAMA UI_ShowMessageRecordingOverlay() full-screen
+// teksto overlay pattern'a — jokio naujo UI mechanizmo nereikia.
+static void galleryPlaceholderBtnEventCb(lv_event_t *e) {
+    (void)e;
+    UI_ShowMessageRecordingOverlay(LV_SYMBOL_IMAGE " Galerija — netrukus!");
+    delay(1200);
+    UI_HideMessageRecordingOverlay();
+}
+
+// 2026-09-07 (vartotojo pastaba: "vardo ženkliukas veda į asmeninį, todėl
+// šalia bus kitas") — atskiras zenklas SALIA vardo mygtuko (ne jo dalis),
+// kad paspaudimas ANT ZENKLO nepatektu i nameButtonEventCb() (kitas objektas
+// LVGL medyje — jokio event bubbling konflikto).
+static void messageBadgeEventCb(lv_event_t *e) {
+    RecognizedPerson person = (RecognizedPerson)(intptr_t)lv_event_get_user_data(e);
+    if (s_onPersonBadgeTapped) s_onPersonBadgeTapped(person);
+}
+
 static void createNameButton(lv_obj_t *parent, RecognizedPerson person,
                               int32_t xOffset, int32_t yOffset, bool forceBlue = false) {
     const PersonProfile &p = FamilyProfiles_Get(person);
-    const int32_t BTN_W = 200, BTN_H = 60;
+    const int32_t BTN_W = 145, BTN_H = 50;
 
     lv_obj_t *btn = lv_button_create(parent);
     lv_obj_remove_style_all(btn);  // NE numatytoji LVGL tema (vienodi melyni langeliai)
@@ -176,10 +221,53 @@ static void createNameButton(lv_obj_t *parent, RecognizedPerson person,
     lv_obj_set_style_text_font(lbl, &lv_icons_22, 0);
     lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
     lv_obj_center(lbl);
+
+    // 2026-09-07 (vartotojo pastaba: "jei neišklausyta tai raudona, jei
+    // išklausyta nors vieną kartą - žalia, ties kiekvienu vardu" + "vardo
+    // ženkliukas veda į asmeninį, todėl šalia bus kitas") — ATSKIRAS,
+    // PASPAUDZIAMAS mygtukas SALIA vardo (ne virs jo) — paspaudus, groja
+    // TO KONKRETAUS zmogaus laukiancia zinute (zr. UI_Screens_Init()
+    // onPersonBadgeTapped). Pozicija SKAICIUOJAMA is vardo mygtuko
+    // xOffset/yOffset (LV_ALIGN_TOP_MID centras = ekrano vidurys + xOffset).
+    // 2026-09-07 (vartotojo pastaba: "Reiktu kompaktiskiau tas placias
+    // ikonas, kad nedaug nuo teksto plocio nueitu. Nes turim galerijos
+    // butonui vietos padaryti") — BADGE_SIZE 40->30, tarpas 8->4, o vardo
+    // mygtukas 160->145, kad visa "mygtukas+zenklas" pora uzimtu maziau
+    // horizontalios vietos, paliekant daugiau laisvos vietos ekrane.
+    const int32_t SCREEN_CENTER_X = 160;  // LCD_H_RES/2 (lcd_st7796.h)
+    const int32_t BADGE_SIZE = 30;
+    int32_t badgeX = SCREEN_CENTER_X + xOffset + BTN_W / 2 + 4;
+    int32_t badgeY = yOffset + (BTN_H - BADGE_SIZE) / 2;
+
+    lv_obj_t *badge = lv_button_create(parent);
+    lv_obj_remove_style_all(badge);
+    lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(badge, 2, 0);
+    lv_obj_set_style_border_color(badge, lv_color_white(), 0);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(badge, LV_ALIGN_TOP_LEFT, badgeX, badgeY);
+    lv_obj_add_event_cb(badge, messageBadgeEventCb, LV_EVENT_CLICKED, (void *)(intptr_t)person);
+    lv_obj_add_flag(badge, LV_OBJ_FLAG_HIDDEN);  // rodoma TIK jei yra/buvo zinute (zr. refresh)
+    lv_obj_t *badgeIcon = lv_label_create(badge);
+    lv_label_set_text(badgeIcon, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_font(badgeIcon, &lv_font_lt_18, 0);
+    lv_obj_set_style_text_color(badgeIcon, lv_color_white(), 0);
+    lv_obj_center(badgeIcon);
+    s_nameBadges[person] = badge;
 }
 
-void UI_Screens_Init(void (*onMenuPressed)()) {
+static void inboxBtnEventCb(lv_event_t *e) {
+    (void)e;
+    if (s_onMenuPressed) s_onMenuPressed();  // 2026-09-07: tiesiog atidaro Meniu, kur pasirenkamas KONKRETUS zmogus
+}
+
+void UI_Screens_Init(void (*onMenuPressed)(), void (*onRecordMessagePicked)(RecognizedPerson),
+                      void (*onPersonBadgeTapped)(RecognizedPerson)) {
     s_onMenuPressed = onMenuPressed;
+    s_onRecordMessagePicked = onRecordMessagePicked;
+    s_onPersonBadgeTapped = onPersonBadgeTapped;
 
     s_scrStandby = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_scrStandby, lv_color_black(), 0);
@@ -200,7 +288,6 @@ void UI_Screens_Init(void (*onMenuPressed)()) {
     lv_obj_set_style_text_font(s_scanningLabel, &lv_font_lt_22, 0);
     lv_obj_set_style_text_color(s_scanningLabel, lv_color_white(), 0);
     lv_obj_align(s_scanningLabel, LV_ALIGN_BOTTOM_MID, 0, -30);
-    createStatusDot(s_scrScanning);
     createMenuButton(s_scrScanning);
 
     // Vaiku ir suaugusiuju ekranai piesiami is naujo kiekviena karta
@@ -224,22 +311,97 @@ void UI_Screens_Init(void (*onMenuPressed)()) {
     lv_obj_set_style_text_font(pickerTitle, &lv_font_lt_22, 0);
     lv_obj_set_style_text_color(pickerTitle, lv_color_white(), 0);
     lv_obj_align(pickerTitle, LV_ALIGN_TOP_MID, 0, 30);
+
+    // 2026-09-07 — laiko baigimosi blyksnio taskelis (zr.
+    // UI_SetPickingWarnActive()), numatytai PASLEPTAS.
+    s_pickerWarnDot = lv_obj_create(s_scrPicker);
+    lv_obj_remove_style_all(s_pickerWarnDot);
+    lv_obj_set_size(s_pickerWarnDot, 16, 16);
+    lv_obj_set_style_bg_color(s_pickerWarnDot, lv_palette_main(LV_PALETTE_GREEN), 0);
+    lv_obj_set_style_bg_opa(s_pickerWarnDot, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_pickerWarnDot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_clear_flag(s_pickerWarnDot, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_pickerWarnDot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(s_pickerWarnDot, LV_ALIGN_TOP_RIGHT, -14, 14);
+    lv_obj_add_flag(s_pickerWarnDot, LV_OBJ_FLAG_HIDDEN);
     // Vardai/priskyrimas patvirtinti su vartotoju 2026-09-05 (5 realus seimos
     // nariai = lygiai PERSON_COUNT-1, be PERSON_UNKNOWN). Kiekvienas mygtukas
     // — skirtinga pozicija is centro, kad atrodytu "netvarkingai isbarstyti
     // magnetukai", ne lygi lentele. Isdestymas: anukes VIRSUJE, "Senelis"
     // APACIOJE melynai — vizualiai atskirtas nuo likusiu.
-    createNameButton(s_scrPicker, PERSON_GRANDDAUGHTER_1,   25,  90);
-    createNameButton(s_scrPicker, PERSON_GRANDDAUGHTER_2,  -15, 160);
-    createNameButton(s_scrPicker, PERSON_SON,               20, 230);
-    createNameButton(s_scrPicker, PERSON_WIFE,             -20, 300);
-    createNameButton(s_scrPicker, PERSON_SELF,               0, 375, /*forceBlue=*/true);
+    // 2026-09-07 (vartotojo pastaba: "Galime Meniu viską sumažinti") — BTN_H
+    // sumazintas 60->50, tarpai suglausti, kad tilptu papildoma apacios
+    // eilute (irasymas + zinuciu eiles mygtukai).
+    createNameButton(s_scrPicker, PERSON_GRANDDAUGHTER_1,   25,  75);
+    createNameButton(s_scrPicker, PERSON_GRANDDAUGHTER_2,  -15, 133);
+    createNameButton(s_scrPicker, PERSON_SON,               20, 191);
+    createNameButton(s_scrPicker, PERSON_WIFE,             -20, 249);
+    createNameButton(s_scrPicker, PERSON_SELF,               0, 312, /*forceBlue=*/true);
+
+    // 2026-09-07 (vartotojo pastaba: "vaikams be adminkes galimybe irasyti
+    // trumpa teksta... Meniu skyriuje - visiems skirta"; VELIAU: "vardo
+    // ženkliukas veda į asmeninį, todėl šalia bus kitas" — bendras "Skubi
+    // žinutė" mygtukas NEBEREIKALINGAS, pakeistas 5 individualiais
+    // zenklais SALIA kiekvieno vardo, zr. createNameButton()).
+    {
+        lv_obj_t *recBtn = lv_button_create(s_scrPicker);
+        lv_obj_remove_style_all(recBtn);
+        lv_obj_set_size(recBtn, 145, 46);
+        lv_obj_set_style_radius(recBtn, 16, 0);
+        lv_obj_set_style_bg_color(recBtn, lv_palette_main(LV_PALETTE_ORANGE), 0);
+        lv_obj_set_style_bg_color(recBtn, lv_palette_darken(LV_PALETTE_ORANGE, 2), LV_STATE_PRESSED);
+        lv_obj_clear_flag(recBtn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(recBtn, LV_ALIGN_TOP_MID, -83, 385);
+        lv_obj_add_event_cb(recBtn, recordMessageModeBtnEventCb, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *recLbl = lv_label_create(recBtn);
+        lv_label_set_text(recLbl, LV_SYMBOL_AUDIO " Įrašyti");
+        lv_obj_set_style_text_font(recLbl, &lv_font_lt_20, 0);
+        lv_obj_set_style_text_color(recLbl, lv_color_white(), 0);
+        lv_obj_center(recLbl);
+    }
+    // 2026-09-07 (vartotojo pastaba: "Ar liko vietos 'Galerija' butonui?" ->
+    // "1" [pridek dabar kaip vietos rezervavima]) — TIK placeholder: rodo
+    // "netrukus", NES fizinio ekrano skaidrių demonstravimo (slideshow)
+    // funkcija dar nesukurta (laukia P10 galerijos endpoint'u, kurie dar
+    // nekompiliuoti/idiegti telefone, zr. Android Studio Gradle diagnostika).
+    {
+        lv_obj_t *galBtn = lv_button_create(s_scrPicker);
+        lv_obj_remove_style_all(galBtn);
+        lv_obj_set_size(galBtn, 145, 46);
+        lv_obj_set_style_radius(galBtn, 16, 0);
+        lv_obj_set_style_bg_color(galBtn, lv_palette_main(LV_PALETTE_PURPLE), 0);
+        lv_obj_set_style_bg_color(galBtn, lv_palette_darken(LV_PALETTE_PURPLE, 2), LV_STATE_PRESSED);
+        lv_obj_clear_flag(galBtn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(galBtn, LV_ALIGN_TOP_MID, 83, 385);
+        lv_obj_add_event_cb(galBtn, galleryPlaceholderBtnEventCb, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *galLbl = lv_label_create(galBtn);
+        lv_label_set_text(galLbl, LV_SYMBOL_IMAGE " Galerija");
+        lv_obj_set_style_text_font(galLbl, &lv_font_lt_20, 0);
+        lv_obj_set_style_text_color(galLbl, lv_color_white(), 0);
+        lv_obj_center(galLbl);
+    }
+
+    // 2026-09-07 — STANDBY "pastdezutes" garsiakalbis (zr.
+    // UI_RefreshInboxIndicator() del spalvos logikos) — TYCIA STANDBY, ne
+    // konkretaus zmogaus ekrane, nes zinutes skirtos VISIEMS.
+    s_inboxBtn = lv_button_create(s_scrStandby);
+    lv_obj_set_size(s_inboxBtn, 44, 44);
+    lv_obj_set_style_radius(s_inboxBtn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_align(s_inboxBtn, LV_ALIGN_TOP_RIGHT, -14, 14);
+    lv_obj_add_event_cb(s_inboxBtn, inboxBtnEventCb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *inboxLbl = lv_label_create(s_inboxBtn);
+    lv_label_set_text(inboxLbl, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_font(inboxLbl, &lv_font_lt_22, 0);
+    lv_obj_set_style_text_color(inboxLbl, lv_color_white(), 0);
+    lv_obj_center(inboxLbl);
 
     // "Veidas" (dvi akys) — dezute kaip veikejas, ne "ekranas, kuriame
     // kazka rodome" (zr. pokalbio istorija 2026-09-04 del produkto krypties).
     // VIENA akiu pora, perkeliama tarp ekranu (zr. EyeRenderer_MoveToParent).
     EyeRenderer_Create(s_scrStandby);
     EyeRenderer_SetState(EYE_STATE_SLEEP);
+
+    UI_RefreshInboxIndicator();
 }
 
 void UI_ShowStandby() {
@@ -331,7 +493,6 @@ void UI_ShowChildGreeting(const PersonProfile &p) {
     EyeRenderer_MoveToParent(s_scrStandby);
     lv_obj_clean(s_scrChild);
     lv_obj_set_style_bg_color(s_scrChild, p.themeBg, 0);
-    createStatusDot(s_scrChild);
 
     EyeRenderer_MoveToParent(s_scrChild);
     EyeRenderer_SetState(EYE_STATE_HAPPY);
@@ -375,7 +536,6 @@ void UI_ShowAdultGreeting(const PersonProfile &p) {
     EyeRenderer_MoveToParent(s_scrStandby);  // "gelbejimas" pries clean()
     lv_obj_clean(s_scrAdult);
     lv_obj_set_style_bg_color(s_scrAdult, p.themeBg, 0);
-    createStatusDot(s_scrAdult);
 
     EyeRenderer_MoveToParent(s_scrAdult);
     EyeRenderer_SetState(EYE_STATE_HAPPY);
@@ -422,7 +582,14 @@ void UI_ShowAdultGreeting(const PersonProfile &p) {
 void UI_ShowNamePicker(void (*onPersonSelected)(RecognizedPerson)) {
     s_onPersonSelected = onPersonSelected;
     EyeRenderer_MoveToParent(s_scrStandby);  // "gelbejimas" — s_scrPicker niekad neclean'inamas, bet nuoseklumo delei
+    UI_SetPickingWarnActive(false);  // svezias PICKING_TIMEOUT_MS ciklas — jokio "senojo" blyksnio likuciо
     lv_screen_load_anim(s_scrPicker, LV_SCR_LOAD_ANIM_FADE_IN, 200, 0, false);
+}
+
+void UI_SetPickingWarnActive(bool active) {
+    if (!s_pickerWarnDot) return;
+    if (active) lv_obj_clear_flag(s_pickerWarnDot, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(s_pickerWarnDot, LV_OBJ_FLAG_HIDDEN);
 }
 
 // VIESAS profilis — naudoja TIK PUBLIC zinute (NIEKADA PRIVATE — privati
@@ -435,7 +602,6 @@ void UI_ShowPublicGreeting(const PersonProfile &p) {
     EyeRenderer_MoveToParent(s_scrStandby);  // "gelbejimas" pries clean()
     lv_obj_clean(s_scrPublic);
     lv_obj_set_style_bg_color(s_scrPublic, p.themeBg, 0);
-    createStatusDot(s_scrPublic);
 
     EyeRenderer_MoveToParent(s_scrPublic);
     EyeRenderer_SetState(EYE_STATE_HAPPY);
@@ -493,6 +659,103 @@ void UI_ShowCameraFlashOff() {
     lv_obj_delete(s_flashOverlay);
     s_flashOverlay = nullptr;
     lv_timer_handler();
+}
+
+// 2026-09-07 — "visiems" balso zinuciu irasymo/grojimo busenos overlay (zr.
+// ui_screens.h komentara). SVARBU: kviecianti puse (app_state_machine.cpp
+// onMessageSenderPicked()/onInboxPressed()) yra LVGL MYGTUKO PASPAUDIMO
+// ivykio callback'o viduje (nameButtonEventCb/inboxBtnEventCb) — TA PATI
+// situacija kaip soundButtonEventCb() aukscau (zr. jos komentara): sitoje
+// vietoje lv_timer_handler() BUTU TYLIAI IGNORUOJAMAS (LVGL apsauga nuo
+// reentrancy is indev/lietimo apdorojimo), TAD naudojame lv_refr_now(NULL) —
+// zemesnio lygio, tiesiogini piesimo iskvietima, saugu is event callback
+// konteksto. (NE tas pats atvejis, kaip WAKE sekos timer callback'as,
+// kuri istaisem 2026-09-07 anksciau — ten reentrancy NEBUVO apsaugotas ir
+// sukeldavo neapibrezta elgesi; cia LVGL PATI apsisaugo, bet tyliai nieko
+// nedarydama, tad reikia alternatyvaus budo.)
+void UI_ShowMessageRecordingOverlay(const char *text) {
+    if (!s_msgOverlay) {
+        s_msgOverlay = lv_obj_create(lv_screen_active());
+        lv_obj_remove_style_all(s_msgOverlay);
+        lv_obj_set_size(s_msgOverlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_style_bg_color(s_msgOverlay, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(s_msgOverlay, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(s_msgOverlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(s_msgOverlay, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_move_foreground(s_msgOverlay);
+        s_msgOverlayLabel = lv_label_create(s_msgOverlay);
+        lv_label_set_long_mode(s_msgOverlayLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_msgOverlayLabel, LV_PCT(85));
+        lv_obj_set_style_text_align(s_msgOverlayLabel, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(s_msgOverlayLabel, &lv_font_lt_22, 0);
+        lv_obj_set_style_text_color(s_msgOverlayLabel, lv_color_white(), 0);
+        lv_obj_center(s_msgOverlayLabel);
+    } else {
+        lv_obj_move_foreground(s_msgOverlay);
+    }
+    lv_label_set_text(s_msgOverlayLabel, text);
+    lv_refr_now(NULL);
+}
+
+void UI_HideMessageRecordingOverlay() {
+    if (!s_msgOverlay) return;
+    lv_obj_delete(s_msgOverlay);
+    s_msgOverlay = nullptr;
+    s_msgOverlayLabel = nullptr;
+    lv_refr_now(NULL);
+}
+
+// 2026-09-07 — STANDBY ikonos spalva dabar priklauso NUO BUSENOS (NVS),
+// NE nuo failo egzistavimo (failai dabar NETRINAMI po grojimo, zr.
+// app_state_machine.cpp) — raudona, jei BENT VIENAS zmogus turi UNHEARD.
+void UI_RefreshInboxIndicator() {
+    bool hasUnheard = false;
+    s_inboxStatePrefs.begin("inboxst", true);
+    for (int i = 1; i < PERSON_COUNT; i++) {
+        uint8_t state = s_inboxStatePrefs.getUChar(inboxStateKey((RecognizedPerson)i).c_str(),
+                                                     (uint8_t)InboxBadgeState::NONE);
+        if (state == (uint8_t)InboxBadgeState::UNHEARD) { hasUnheard = true; break; }
+    }
+    s_inboxStatePrefs.end();
+    lv_color_t col = hasUnheard ? lv_palette_main(LV_PALETTE_RED) : lv_palette_main(LV_PALETTE_GREEN);
+    if (s_inboxBtn) lv_obj_set_style_bg_color(s_inboxBtn, col, 0);
+    UI_RefreshNameButtonBadges();
+}
+
+void UI_MarkPersonMessageSent(RecognizedPerson sender) {
+    if (sender <= PERSON_UNKNOWN || sender >= PERSON_COUNT) return;
+    s_inboxStatePrefs.begin("inboxst", false);
+    s_inboxStatePrefs.putUChar(inboxStateKey(sender).c_str(), (uint8_t)InboxBadgeState::UNHEARD);
+    s_inboxStatePrefs.end();
+    UI_RefreshNameButtonBadges();
+}
+
+void UI_MarkPersonMessageHeard(RecognizedPerson sender) {
+    if (sender <= PERSON_UNKNOWN || sender >= PERSON_COUNT) return;
+    s_inboxStatePrefs.begin("inboxst", false);
+    s_inboxStatePrefs.putUChar(inboxStateKey(sender).c_str(), (uint8_t)InboxBadgeState::HEARD);
+    s_inboxStatePrefs.end();
+    UI_RefreshNameButtonBadges();
+}
+
+void UI_RefreshNameButtonBadges() {
+    s_inboxStatePrefs.begin("inboxst", true);
+    for (int i = 1; i < PERSON_COUNT; i++) {
+        if (!s_nameBadges[i]) continue;
+        uint8_t state = s_inboxStatePrefs.getUChar(inboxStateKey((RecognizedPerson)i).c_str(),
+                                                     (uint8_t)InboxBadgeState::NONE);
+        if (state == (uint8_t)InboxBadgeState::NONE) {
+            lv_obj_add_flag(s_nameBadges[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_nameBadges[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_bg_color(s_nameBadges[i],
+                                       state == (uint8_t)InboxBadgeState::UNHEARD
+                                           ? lv_palette_main(LV_PALETTE_RED)
+                                           : lv_palette_main(LV_PALETTE_GREEN),
+                                       0);
+        }
+    }
+    s_inboxStatePrefs.end();
 }
 
 // 2026-09-06 (vartotojo pastaba: "būtinai padarome ir fotografavimo per

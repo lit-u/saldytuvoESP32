@@ -58,7 +58,14 @@ bool Audio_PlayFile(const char *path);
 // taps true, irasymas baigiamas ANKSCIAU nei durationMs (vartotojo pastaba
 // 2026-09-05: "1 sek sustoja, nera stop. Gal padaryti?" — admin puslapio
 // "Stop" mygtukas).
-bool Audio_RecordToFile(const char *path, uint32_t durationMs, volatile bool *stopRequested = nullptr);
+//
+// onSecondTick (nebutinas, 2026-09-07 vartotojo pastaba: "Per įrašymą tegu
+// eina atbulinis cauntdown sek") — kviecamas KARTA KIEKVIENA praejusia
+// sekunde su (praejusiu sekundziu skaicius, bendra trukme sekundemis), kad
+// kviecianti puse (UI) galetu atnaujinti atbulini skaitliuka EKRANE. SIS
+// modulis apie LVGL/UI NIEKO NEZINO — tik iskvieicia funkcijos rodykle.
+bool Audio_RecordToFile(const char *path, uint32_t durationMs, volatile bool *stopRequested = nullptr,
+                         void (*onSecondTick)(uint32_t elapsedS, uint32_t totalS) = nullptr);
 
 // 2026-09-06 (vartotojo pastaba: "noriu papildomai pridėti serverio - P10
 // saugyklą") — balso zinuciu ISKELIMAS/PARSISIUNTIMAS is P10 telefono

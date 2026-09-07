@@ -3,8 +3,10 @@
 #include "ui_screens.h"
 #include "lcd_st7796.h"
 #include "eye_renderer.h"
+#include "audio_output.h"
 #include <lvgl.h>
 #include <esp_heap_caps.h>
+#include <LittleFS.h>
 
 // 2026-09-06: JPEG->maza RGB888 dekodavimas (lv_tjpgd.c naujas viesas
 // funkcija) — zr. ui_screens.h UI_ScanningShowPhoto() komentara del
@@ -32,7 +34,13 @@ static void onMenuPressed();
 // 2026-09-05: "Kas tu?" mygtukai po nesekmingo atpazinimo), pries pasiduodant
 // ir grystant miegoti — "kiekvienam veiksmui uzrasas" principas galioja ir
 // cia (zr. AppStateMachine_Update APP_STATE_PICKING atveji).
-static const uint32_t PICKING_TIMEOUT_MS = 20000;
+// 2026-09-07 (vartotojo pastaba: "Meniu langas turi fiksuotą automatinį
+// išsijungimą. Todėl perklausai kelias žinutes ir jis išsijungia. Padaryk
+// automatinį kuo didesnį (gal 2 min)") — 20s -> 2min, nes Meniu ekranas
+// dabar taip pat naudojamas keliu balso zinuciu isklausymui (zr.
+// onPersonBadgeTapped()), kas gali uztrukti ilgiau nei paprastas "Kas tu?"
+// pasirinkimas.
+static const uint32_t PICKING_TIMEOUT_MS = 120000;
 
 // Kiek laiko be judesio grizti i STANDBY is GREETING (=RECOGNIZED) busenos.
 // TODO: pagal README "atviri klausimai" — sitas skaicius v1 kontekste
@@ -136,6 +144,83 @@ static void onMenuPressed() {
     UI_ShowNamePicker(onPersonPicked);
     s_pickingStartMs = millis();
     s_state = APP_STATE_PICKING;
+}
+
+// 2026-09-07 (vartotojo pastaba: "vaikams be adminkes galimybe irasyti
+// trumpa teksta... Meniu skyriuje - visiems skirta"; VELIAU: "tegu būna
+// neištrinta, nes gali norėti daug žmonių išklausyti. Išsitrina tada, kai
+// tas žmogus parašo kitą žinutę") — "Kas tu?" ekrane paspaudus "Palikti
+// žinutę" + varda, IRASOMA balso zinute VISIEMS. VIENAS FIKSUOTAS failas
+// KIEKVIENAM zmogui ("/inbox/<personId>.wav") — nauja sio ZMOGAUS zinute
+// PERRASO sena JO PATIES (tai priimtina — vartotojo sprendimas), bet
+// NIEKADA neliecia KITU zmoniu failu (skirtingi personId => skirtingi
+// failai). Audio_RecordToFile() yra BLOKUOJANTIS ir kviecamas TIESIOGIAI is
+// LVGL mygtuko paspaudimo ivykio — TAS PATS saugus pattern'as, kaip jau
+// naudojamas soundButtonEventCb() (ui_screens.cpp) su Audio_PlayFile().
+// 2026-09-07 (vartotojo pastaba: "Pailginkime žinutę iki 10 sek"): 6s->10s.
+static const uint32_t MESSAGE_RECORD_MS = 10000;
+
+static void inboxPathFor(RecognizedPerson person, char *outPath, size_t outSize) {
+    snprintf(outPath, outSize, "/inbox/%d.wav", (int)person);
+}
+
+// 2026-09-07 (vartotojo pastaba: "Per įrašymą tegu eina atbulinis
+// cauntdown sek") — Audio_RecordToFile() kviecia SITA KARTA per sekunde;
+// atnaujina overlay teksta su likusiu sekundziu skaicium. Paprastas laisvo
+// tipo funkcijos rodykle (audio_output.h) — jokios busenos NEIŠSAUGOME
+// cia, viskas paskaiciuojama is (elapsedS,totalS) parametru.
+static void onRecordTick(uint32_t elapsedS, uint32_t totalS) {
+    uint32_t remaining = (totalS > elapsedS) ? (totalS - elapsedS) : 0;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "🔴 %lus", (unsigned long)remaining);
+    UI_ShowMessageRecordingOverlay(buf);
+}
+
+static void onMessageSenderPicked(RecognizedPerson person) {
+    const PersonProfile &profile = FamilyProfiles_Get(person);
+    char recMsg[64];
+    snprintf(recMsg, sizeof(recMsg), "Įrašoma... (%s)", profile.vocativeName);
+    UI_ShowMessageRecordingOverlay(recMsg);
+    delay(600);  // trumpa pauze, kad "Įrašoma... (Vardas)" spetu buti perskaitytas pries prasidedant skaitliukui
+
+    if (!LittleFS.exists("/inbox")) LittleFS.mkdir("/inbox");
+    char path[32];
+    inboxPathFor(person, path, sizeof(path));
+    Audio_RecordToFile(path, MESSAGE_RECORD_MS, nullptr, onRecordTick);  // PERRASO sena SIO ZMOGAUS zinute, jei buvo
+
+    UI_ShowMessageRecordingOverlay("Įrašyta! Ačiū :)");
+    delay(1200);
+    UI_HideMessageRecordingOverlay();
+    UI_MarkPersonMessageSent(person);  // nauja zinute — visada raudonas taskas, net jei sena buvo jau isklausyta
+    UI_RefreshInboxIndicator();
+    // 2026-09-07 (vartotojo pastaba: "Po žinutės įrašymo išsijungia, tegu
+    // eina į meniu") — anksciau CIA buvo enterStandby(); dabar VIETOJ TO
+    // grystama i Meniu (ta pati logika kaip GREETING timeout, zr.
+    // AppStateMachine_Update() komentara).
+    onMenuPressed();
+}
+
+// 2026-09-07 (vartotojo pastaba: "dabar negali pasirinkti kieno žinutę
+// klausysi... vardo ženkliukas veda į asmeninį, todėl šalia bus kitas") —
+// paspaudus KONKRETAUS zmogaus zenkla Meniu ekrane, groja TO zmogaus
+// zinute, parodo "Nuo: Vardas" (vartotojo pastaba: "kai groja, rašyti nuo
+// ko"). Failas NETRINAMAS (vartotojo pastaba: "gali norėti daug žmonių
+// išklausyti") — tik pazymima kaip isklausyta (zalias taskas).
+static void onPersonBadgeTapped(RecognizedPerson person) {
+    char path[32];
+    inboxPathFor(person, path, sizeof(path));
+    if (!LittleFS.exists(path)) return;  // apsauga — badge neturetu buti matomas be zinutes
+
+    const PersonProfile &profile = FamilyProfiles_Get(person);
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Nuo: %s", profile.publicName);
+    UI_ShowMessageRecordingOverlay(msg);
+
+    Audio_PlayFile(path);
+
+    UI_HideMessageRecordingOverlay();
+    UI_MarkPersonMessageHeard(person);
+    UI_RefreshInboxIndicator();
 }
 
 // 2026-09-04 (pokalbis su ChatGPT): vietoj to, kad kiekviena efekta
@@ -331,7 +416,7 @@ static void enterGreeting(RecognizedPerson person) {
 }
 
 void AppStateMachine_Init() {
-    UI_Screens_Init(onMenuPressed);
+    UI_Screens_Init(onMenuPressed, onMessageSenderPicked, onPersonBadgeTapped);
     FaceRecognition_Init();
     enterStandby();
 }
@@ -411,18 +496,45 @@ void AppStateMachine_Update(bool motionDetected) {
             break;
         }
 
-        case APP_STATE_PICKING:
+        case APP_STATE_PICKING: {
+            uint32_t elapsed = millis() - s_pickingStartMs;
             // Niekas nepaspaude per PICKING_TIMEOUT_MS — pasiduodam, bet
             // (ta pati "kiekvienam veiksmui uzrasas" taisykle) aiskiai
             // parodome, kad grystama miegoti, ne tiesiog uzgesus tyliai.
-            if (millis() - s_pickingStartMs > PICKING_TIMEOUT_MS) {
+            if (elapsed > PICKING_TIMEOUT_MS) {
+                UI_SetPickingWarnActive(false);
                 enterStandbyWithMessage("Niekas nepasirinko...");
+                break;
             }
+            // 2026-09-07 (vartotojo pastaba: "Kai lieka 10 sek iki
+            // išsijungimo, tegu ima vis dažniau mirksėti... prieš 10 sek [1
+            // blyksnis]... dukart... prieš 6 sekundes... triskart prieš 3
+            // sek") — vis dažnesnis zalio indikatoriaus blyksejimas, kad
+            // vartotojas MATYTU laika baigiantis, ne tiesiog netiketai
+            // uzgestu ekranas bekalbant/beklausant zinutes.
+            uint32_t remaining = PICKING_TIMEOUT_MS - elapsed;
+            bool warnOn =
+                (remaining <= 10000 && remaining > 9500) ||
+                (remaining <= 6000 && remaining > 5500) ||
+                (remaining <= 5000 && remaining > 4500) ||
+                (remaining <= 3000 && remaining > 2500) ||
+                (remaining <= 2000 && remaining > 1500) ||
+                (remaining <= 1000 && remaining > 500);
+            UI_SetPickingWarnActive(warnOn);
             break;
+        }
 
         case APP_STATE_GREETING:
+            // 2026-09-07 (vartotojo pastaba: "asmeniniame profilyje taip pat
+            // greit automatiškai išsijungia... tegu ne išsijungia, o nueina
+            // į Meniu") — anksciau cia buvo enterStandby() (visiskas
+            // uzmigimas); dabar VIETOJ TO grystama i Meniu ("Kas tu?"), kad
+            // vartotojas galetu iskart pasirinkti/perziureti kita zmogu (ar
+            // paklausyti kito zinutes) BE reikalo is naujo zadinti irengini.
+            // Galioja IR tikram atpazinimui (Adult/Child), IR pasirinktam is
+            // saraso (Public) — abu naudoja TA PATI APP_STATE_GREETING.
             if (!motionDetected && (millis() - s_lastMotionMs > SCREEN_AWAKE_TIMEOUT_MS)) {
-                enterStandby();
+                onMenuPressed();
             }
             break;
 

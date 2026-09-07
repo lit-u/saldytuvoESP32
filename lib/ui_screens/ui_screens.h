@@ -11,7 +11,21 @@
 // sukuria visus ekranus (kviesti karta, setup()). `onMenuPressed` — vartotojo
 // pastaba 2026-09-05: universalus "Meniu" mygtukas apacioje kaireje VISUOSE
 // "pabudusiuose" ekranuose, iskart soka i "Kas tu?" 5 pasirinkimu sarasa.
-void UI_Screens_Init(void (*onMenuPressed)());
+// 2026-09-07 (vartotojo pastaba: "vaikams be adminkes galimybe irasyti
+// trumpa teksta") — antras callback: "Kas tu?" ekrane pridetas mygtukas
+// "Palikti žinutę", kuris VĖL rodo ta pati vardu sarasa, bet paspaudus
+// varda iskvieciamas SITAS (ne onPersonSelected) — app_state_machine.cpp
+// zino, kad tai reiskia "irasyti balso zinute VISIEMS nuo sito zmogaus",
+// ne "man priklauso sitas profilis". Zr. UI_ShowMessageRecordingOverlay().
+// 2026-09-07 (vartotojo pastaba: "Dabar negali pasirinkti kieno žinutę
+// klausysi... po mažą mygtuką pridedame šalia vardo... nereiks mygtuko
+// 'Skubi žinutė', o vietoj to bus 5") — `onPersonBadgeTapped` kviecamas
+// paspaudus KONKRETAUS zmogaus rausva/zalia zenkliuka (zr.
+// UI_RefreshNameButtonBadges()) — groja TIK TO zmogaus laukiancia zinute.
+// STANDBY garsiakalbio mygtukas tiesiog atidaro Meniu (kviecia
+// `onMenuPressed`), kur vartotojas jau pats pasirenka KONKRETU zmogu.
+void UI_Screens_Init(void (*onMenuPressed)(), void (*onRecordMessagePicked)(RecognizedPerson sender),
+                      void (*onPersonBadgeTapped)(RecognizedPerson sender));
 
 void UI_ShowStandby();                              // 1. Budejimo rezimas
 void UI_ShowScanning();                              // "aptiktas judesys, atpazistama..."
@@ -43,6 +57,13 @@ void UI_ScanningShowPhoto(const uint8_t *rgb888Data, uint16_t width, uint16_t he
 // kontekste, saugu is karto keisti app_state_machine busena).
 void UI_ShowNamePicker(void (*onPersonSelected)(RecognizedPerson person));
 
+// 2026-09-07 (vartotojo pastaba: "Kai lieka 10 sek iki išsijungimo, tegu
+// ima vis dažniau mirksėti") — perjungia mazo zalio taskelio (virsuje
+// desineje "Kas tu?" ekrane) matomuma. Kviesti is app_state_machine.cpp
+// APP_STATE_PICKING atveju, apskaiciavus, ar dabartinis momentas patenka i
+// vieno is blyksniu langa.
+void UI_SetPickingWarnActive(bool active);
+
 // VIESAS (ne privatus) profilio ekranas — rodomas PO PICKING mygtuko
 // paspaudimo, NE po tikro kameros atpazinimo. TYCIA NErodo FamilyMessages
 // privacios zinutes (ta lieka TIK tikram atpazinimui, zr. UI_ShowAdultGreeting)
@@ -73,3 +94,29 @@ void UI_ShowCameraFlashOff();
 // rodomas — nuosavybe islieka main.cpp puseje (nekeiciama/neatlaisvinama,
 // kol nera naujos nuotraukos). Kviesti PO sekmingo download.
 void UI_ShowPhoto(const uint8_t *jpegData, size_t jpegLen, uint16_t width, uint16_t height);
+
+// 2026-09-07 — "visiems" balso žinučių paštadėžė (žr. README naują skyrių):
+// bet kas gali per "Kas tu?" -> "Palikti žinutę" irasyti trumpa balso
+// zinute (LittleFS "/inbox/<personId>_<millis>.wav"), kuria vėliau bet kas
+// gali issiklausyti paspaudes STANDBY ekrano garsiakalbio mygtuka (raudonas
+// = yra neisklausytu, zalias = nera). Full-screen overlay su tekstu, tas
+// pats vizualus pattern'as kaip UI_ShowCameraFlashOn/Off (bet NE baltas),
+// naudojamas ir irasymo, ir grojimo metu (rodo "Įrašoma..."/"Nuo: Vardas").
+void UI_ShowMessageRecordingOverlay(const char *text);
+void UI_HideMessageRecordingOverlay();
+
+// Atnaujina STANDBY IR Meniu "Skubi žinutė" mygtuku spalva (raudona/zalia)
+// pagal tai, ar "/inbox/" turi bent viena laukiancia zinute — TAIP PAT
+// iskvieicia UI_RefreshNameButtonBadges() (zr. zemiau). Kviesti is
+// app_state_machine.cpp po kiekvieno irasymo/grojimo/pasalinimo, IR karta
+// setup() metu.
+void UI_RefreshInboxIndicator();
+
+// 2026-09-07 (vartotojo pastaba: "ties kiekvienu vardu... jei neišklausyta
+// tai raudona, jei išklausyta nors vieną kartą - žalia") — persistuojanti
+// (NVS) busena kiekvienam seimos nariui: NONE (niekada nesiunte) — mygtukas
+// paslepsas; UNHEARD (isiunte, dar niekas neisklause) — raudonas taskas;
+// HEARD (kazkas jau isklause) — zalias taskas. Kviesti is app_state_machine.cpp.
+void UI_MarkPersonMessageSent(RecognizedPerson sender);
+void UI_MarkPersonMessageHeard(RecognizedPerson sender);
+void UI_RefreshNameButtonBadges();
