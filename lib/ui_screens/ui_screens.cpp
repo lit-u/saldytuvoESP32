@@ -24,6 +24,7 @@ static void (*s_onPersonSelected)(RecognizedPerson) = nullptr;
 static void (*s_onMenuPressed)() = nullptr;
 static void (*s_onRecordMessagePicked)(RecognizedPerson) = nullptr;
 static void (*s_onPersonBadgeTapped)(RecognizedPerson) = nullptr;
+static void (*s_onGalleryPressed)() = nullptr;
 static lv_obj_t *s_msgOverlay = nullptr;
 static lv_obj_t *s_msgOverlayLabel = nullptr;
 static lv_obj_t *s_inboxBtn = nullptr;
@@ -79,12 +80,33 @@ static void createMenuButton(lv_obj_t *parent) {
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(btn, lv_palette_main(LV_PALETTE_BLUE), 0);
     lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -14, 14);
+    // 2026-09-08 (vartotojo pastaba: "padidink M Meniu butono jautrumą,
+    // nedidindamas butono") — lv_obj_set_ext_click_area() prideda NEMATOMA
+    // papildoma paspaudimo zona APLINK matoma mygtuko riba (standartinis
+    // LVGL budas), NEKEICIANT vizualinio dydzio/pozicijos.
+    lv_obj_set_ext_click_area(btn, 25);
     lv_obj_add_event_cb(btn, menuButtonEventCb, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, "M");
     lv_obj_set_style_text_font(lbl, &lv_font_lt_22, 0);
     lv_obj_center(lbl);
 }
+
+// 2026-09-08 (vartotojo pastaba: "M dešinėje viršuje kaip buvo, o užrašai
+// apačioje po nuotrauka") — grazinta prie BENDROS createMenuButton()
+// (TOP_RIGHT, ta pati vieta kaip visuose kituose ekranuose); vietos
+// nuotraukai/mygtukui/uzrasui derinimas dabar sprendziamas UI_ShowPhoto()
+// PHOTO_TOP_RESERVE_H/PHOTO_BOTTOM_CAPTION_H konstantomis.
+
+// 2026-09-08 (vartotojo pastaba: "Padarykime nuotraukų swipe" -> "swipe
+// visai neveikia... rodyklėles" -> galiausiai: "labai nejautrios rodyklės,
+// paprasčiau leisti automatiškai keistis. Išimk rodykles ir swipe.") —
+// PIRMAS bandymas (LV_EVENT_GESTURE) SUKABINDAVO irengini (priverstinis
+// lv_refr_now() is gesto ivykio vidaus — zr. istorija git log'e), ANTRAS
+// (◀/▶ mygtukai) veike, bet vartotojui pasirode per nejautrus liestiniam
+// ekranui. GALUTINIS SPRENDIMAS: PALIKTAS TIK automatinis SLIDESHOW_
+// INTERVAL_MS keitimas (zr. app_state_machine.cpp APP_STATE_SLIDESHOW) —
+// jokio rankinio nuotraukos keitimo sioje versijoje.
 
 // "Garsas" mygtukas (vartotojo pastaba 2026-09-05: "adminkėje irasymas, o
 // savo profilyje atkurimas per garsiakalbi, kai paspaudi 'Garsas'") — rodomas
@@ -174,15 +196,14 @@ static void recordMessageModeBtnEventCb(lv_event_t *e) {
 }
 
 // 2026-09-07 (vartotojo pastaba: "Ar liko vietos 'Galerija' butonui?" ->
-// pasirinkta "1": pridek DABAR kaip vietos rezervavima) — TIK placeholder,
-// nes fizinio ekrano skaidrių demonstravimo (slideshow) funkcija dar
-// nesukurta. Naudoja JAU ESAMA UI_ShowMessageRecordingOverlay() full-screen
-// teksto overlay pattern'a — jokio naujo UI mechanizmo nereikia.
-static void galleryPlaceholderBtnEventCb(lv_event_t *e) {
+// pasirinkta "1": pridek DABAR kaip vietos rezervavima) — is pradziu buvo
+// TIK placeholder ("netrukus"). 2026-09-08 (vartotojo pastaba: "Pajunk
+// esp-32 'Galerija' ir bandom pamatyti nuotraukas") — dabar TIKRAI
+// iskvieicia app_state_machine.cpp, kuris atsisiuncia P10 galerijos sarasa/
+// nuotraukas ir perjungia i APP_STATE_SLIDESHOW.
+static void galleryBtnEventCb(lv_event_t *e) {
     (void)e;
-    UI_ShowMessageRecordingOverlay(LV_SYMBOL_IMAGE " Galerija — netrukus!");
-    delay(1200);
-    UI_HideMessageRecordingOverlay();
+    if (s_onGalleryPressed) s_onGalleryPressed();
 }
 
 // 2026-09-07 (vartotojo pastaba: "vardo ženkliukas veda į asmeninį, todėl
@@ -264,10 +285,12 @@ static void inboxBtnEventCb(lv_event_t *e) {
 }
 
 void UI_Screens_Init(void (*onMenuPressed)(), void (*onRecordMessagePicked)(RecognizedPerson),
-                      void (*onPersonBadgeTapped)(RecognizedPerson)) {
+                      void (*onPersonBadgeTapped)(RecognizedPerson),
+                      void (*onGalleryPressed)()) {
     s_onMenuPressed = onMenuPressed;
     s_onRecordMessagePicked = onRecordMessagePicked;
     s_onPersonBadgeTapped = onPersonBadgeTapped;
+    s_onGalleryPressed = onGalleryPressed;
 
     s_scrStandby = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_scrStandby, lv_color_black(), 0);
@@ -373,7 +396,7 @@ void UI_Screens_Init(void (*onMenuPressed)(), void (*onRecordMessagePicked)(Reco
         lv_obj_set_style_bg_color(galBtn, lv_palette_darken(LV_PALETTE_PURPLE, 2), LV_STATE_PRESSED);
         lv_obj_clear_flag(galBtn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_align(galBtn, LV_ALIGN_TOP_MID, 83, 385);
-        lv_obj_add_event_cb(galBtn, galleryPlaceholderBtnEventCb, LV_EVENT_CLICKED, nullptr);
+        lv_obj_add_event_cb(galBtn, galleryBtnEventCb, LV_EVENT_CLICKED, nullptr);
         lv_obj_t *galLbl = lv_label_create(galBtn);
         lv_label_set_text(galLbl, LV_SYMBOL_IMAGE " Galerija");
         lv_obj_set_style_text_font(galLbl, &lv_font_lt_20, 0);
@@ -759,33 +782,112 @@ void UI_RefreshNameButtonBadges() {
 }
 
 // 2026-09-06 (vartotojo pastaba: "būtinai padarome ir fotografavimo per
-// esp funkciją ir rodymo iš P10 - 3.5 ekrane") — rodo LittleFS irasyta
-// JPEG faila ("/photo_latest.jpg", atsiustas is P10, zr. main.cpp
-// Photo_DownloadFromPhone()) per lv_image + TJpgDec dekoderi. Naudoja
-// 2026-09-06: pirmas bandymas (LV_USE_FS_STDIO, "S:/photo_latest.jpg" is
-// LittleFS) determinuotai kildavo "Guru Meditation Error: Double exception"
-// TIKSLIAI ties LVGL fopen()/fread() (newlib VFS -> esp_littlefs ->
-// esp_partition_read) — zr. lv_conf.h komentara. Dabar naudojame
-// LV_USE_FS_MEMFS: nuotrauka jau RAM buferyje (main.cpp Photo_
-// DownloadFromPhone(), PSRAM), rodoma per LV_IMAGE_SRC_VARIABLE — JOKIO
-// flash skaitymo dekodavimo metu.
+// esp funkciją ir rodymo iš P10 - 3.5 ekrane") — rodo P10 atsiusta JPEG
+// (main.cpp Photo_DownloadFromPhone() arba app_state_machine.cpp galerijos
+// slideshow) LCD ekrane.
+// 2026-09-08 (vartotojo pastaba: "Pasislepia meniu butona, gal gali zemiau
+// foto") — is pradziu naudojo LV_COLOR_FORMAT_RAW + LVGL saves TJpgDec
+// dekodavima TIKSLIAI j (width,height) dydzio lv_image — kol nuotraukos
+// buvo fiksuoto mazo dydzio (320x240), tai netrukdydavo, BET galerijos
+// nuotraukos (iki 640px plocio, zr. main.cpp compressImage()) uzimdavo
+// beveik visa ekrana ir udengdavo TOP_RIGHT Meniu mygtuka. FIX: naudojame
+// TA PATI "dekoduok TIESIAI i jau tinkamo dydzio RGB888 buferi" funkcija
+// (lv_tjpgd_decode_thumbnail(), zr. ui_screens.h UI_ScanningShowPhoto()
+// komentara del pries tai jau IRODYTOS priezasties, kodel NE LVGL
+// incremental TJpgDec+scale kelias) — dabar SU sio ekrano "telpa i dezute"
+// (aspect-preserving fit) skaiciavimu, kad visada liktu laisva juosta
+// VIRSUJE (Meniu mygtukui, zr. createMenuButton()) IR APACIOJE (uzrasui,
+// zr. UI_SetPhotoCaption()).
+// 2026-09-08 (vartotojo pastaba: "M dešinėje viršuje kaip buvo, o užrašai
+// apačioje po nuotrauka") — is pradziu bandeme M mygtuka perkelti apacia,
+// o uzrasa virsuje — vartotojas paprase ATVIRKSCIAI (M grazintas i savo
+// iprasta TOP_RIGHT vieta, uzrasas dabar APACIOJE).
+extern "C" bool lv_tjpgd_decode_thumbnail(const uint8_t *jpegData, size_t jpegLen,
+                                           uint16_t targetW, uint16_t targetH,
+                                           uint8_t *outBuf, size_t outBufSize);
 static lv_image_dsc_t s_photoDsc;
+static uint8_t *s_photoThumbBuf = nullptr;
+static const uint16_t PHOTO_TOP_RESERVE_H = 80;      // vietos createMenuButton() (TOP_RIGHT, 55px + paraštės)
+static const uint16_t PHOTO_BOTTOM_CAPTION_H = 64;   // vietos UI_SetPhotoCaption() uzrasui
 
 void UI_ShowPhoto(const uint8_t *jpegData, size_t jpegLen, uint16_t width, uint16_t height) {
     lv_obj_clean(s_scrPhoto);
     createMenuButton(s_scrPhoto);
 
+    if (jpegData == nullptr || width == 0 || height == 0) return;
+
+    const uint16_t maxW = 320;  // LCD_H_RES (lcd_st7796.h)
+    const uint16_t maxH = 480 - PHOTO_TOP_RESERVE_H - PHOTO_BOTTOM_CAPTION_H;
+    float scale = (float)maxW / (float)width;
+    float scaleH = (float)maxH / (float)height;
+    if (scaleH < scale) scale = scaleH;
+    if (scale > 1.0f) scale = 1.0f;  // NEdidiname mazu nuotrauku, tik sumaziname dideles
+    uint16_t targetW = (uint16_t)(width * scale);
+    uint16_t targetH = (uint16_t)(height * scale);
+    if (targetW < 1) targetW = 1;
+    if (targetH < 1) targetH = 1;
+
+    size_t bufSize = (size_t)targetW * targetH * 3;
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(bufSize, MALLOC_CAP_SPIRAM);
+    if (!buf) return;
+    if (!lv_tjpgd_decode_thumbnail(jpegData, jpegLen, targetW, targetH, buf, bufSize)) {
+        heap_caps_free(buf);
+        return;
+    }
+    if (s_photoThumbBuf) heap_caps_free(s_photoThumbBuf);
+    s_photoThumbBuf = buf;
+
     lv_memset(&s_photoDsc, 0, sizeof(s_photoDsc));
     s_photoDsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-    s_photoDsc.header.cf = LV_COLOR_FORMAT_RAW;
-    s_photoDsc.header.w = width;
-    s_photoDsc.header.h = height;
-    s_photoDsc.data_size = jpegLen;
-    s_photoDsc.data = jpegData;
+    s_photoDsc.header.cf = LV_COLOR_FORMAT_RGB888;
+    s_photoDsc.header.w = targetW;
+    s_photoDsc.header.h = targetH;
+    s_photoDsc.header.stride = targetW * 3;
+    s_photoDsc.data_size = bufSize;
+    s_photoDsc.data = s_photoThumbBuf;
 
     lv_obj_t *img = lv_image_create(s_scrPhoto);
     lv_image_set_src(img, &s_photoDsc);
-    lv_obj_center(img);
+    lv_obj_set_size(img, targetW, targetH);
+    lv_obj_align(img, LV_ALIGN_TOP_MID, 0, PHOTO_TOP_RESERVE_H + (maxH - targetH) / 2);
 
-    lv_screen_load_anim(s_scrPhoto, LV_SCR_LOAD_ANIM_FADE_IN, 300, 0, false);
+    // 2026-09-08 (vartotojo pastaba: rankinis nuotraukos keitimas —
+    // gestas/rodyklės — ISBANDYTA IR ATSISAKYTA, zr. komentara virs
+    // UI_ShowPhoto() apie "labai nejautrios rodyklės, paprasčiau leisti
+    // automatiškai keistis") — TIK automatinis SLIDESHOW_INTERVAL_MS
+    // keitimas (app_state_machine.cpp).
+
+    // 2026-09-08 (vartotojo pastaba: "Po 'Kraunama galerija' porai kadrų
+    // 0,2 sek pasirodo pilnas Meniu puslapis") — LV_SCR_LOAD_ANIM_FADE_IN
+    // per savo 300ms perejima trumpai piese NAUJA ekrana VIRS SENOJO
+    // (Picker/"Kas tu?") DAR MATOMO turinio, o overlay virs jo jau buvo
+    // pasalintas (zr. app_state_machine.cpp onGalleryPressed()) — per ta
+    // fade langa senasis ekranas "prasisviesdavo". FIX: LV_SCR_LOAD_ANIM_NONE
+    // (akimirksniu perjungimas, be jokio persidengimo) TIK sitam ekranui —
+    // slideshow'e naujas turinys JAU paruostas is anksto (UI_ShowPhoto()
+    // dekodavo/nupiese visk prieš siai eilutei ivykstant), tad staigus
+    // perjungimas nera pastebimas kaip "trukciojantis", tiesiog akimirksniu.
+    lv_screen_load_anim(s_scrPhoto, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+}
+
+// 2026-09-08 (vartotojo pastaba: "ar prie nuotrauku bus uzrasai, juk raseme
+// adminkeje ir vardas ir aprasymas?" + "užrašai apačioje po nuotrauka") —
+// rodo vardo/aprasymo teksta APACIOJE rezervuotoje juostoje (zr.
+// PHOTO_BOTTOM_CAPTION_H). Kviesti PO UI_ShowPhoto() kiekvienam slide'ui
+// (zr. app_state_machine.cpp showGallerySlide()) — UI_ShowPhoto() PATS
+// iskviecia lv_obj_clean(s_scrPhoto), tad uzrasas PRIVALO buti sukurtas IS
+// NAUJO kas karta, ne persistuoti tarp kvietimu. Tuscias/nullptr tekstas —
+// tiesiog nieko nerodo (senasis Photo_DownloadFromPhone() kelias neturi
+// jokio vardo/aprasymo).
+void UI_SetPhotoCaption(const char *text) {
+    if (!text || !text[0]) return;
+    lv_obj_t *cap = lv_label_create(s_scrPhoto);
+    lv_label_set_long_mode(cap, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(cap, LV_PCT(90));
+    lv_obj_set_style_text_align(cap, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(cap, text);
+    lv_obj_set_style_text_font(cap, &lv_font_lt_18, 0);
+    lv_obj_set_style_text_color(cap, lv_color_white(), 0);
+    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_move_foreground(cap);
 }

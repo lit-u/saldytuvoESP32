@@ -709,6 +709,71 @@ Bandant pirmą kartą sinchronizuoti `android-server` Android Studio projektą p
 
 ### Kas dar neveikia / atviri klausimai (v1 pabaiga)
 
-1. **Fizinio LCD ekrano slideshow (skaidrių demonstravimas)** — TIK admin puslapio įkėlimo/valdymo dalis padaryta šioje sesijoje. ESP32 pusėje reikės: naujos `APP_STATE_SLIDESHOW` būsenos, IŠBRAUKTOS iš auto-timeout tikrinimo (skaidrės neturi savaime užgesti), periodinio `/gallery/list`+`/gallery/photo` atsisiuntimo per `HTTPClient` (ta pati schema kaip esamas vienos nuotraukos `Photo_DownloadFromPhone()`), TJpgDec dekodavimo (JAU PATIKRINTA, kad naršyklės suspaustas baseline JPEG suderinamas — žr. aukščiau).
+1. ~~**Fizinio LCD ekrano slideshow (skaidrių demonstravimas)** — TIK admin puslapio įkėlimo/valdymo dalis padaryta šioje sesijoje. ESP32 pusėje reikės: naujos `APP_STATE_SLIDESHOW` būsenos, IŠBRAUKTOS iš auto-timeout tikrinimo (skaidrės neturi savaime užgesti), periodinio `/gallery/list`+`/gallery/photo` atsisiuntimo per `HTTPClient` (ta pati schema kaip esamas vienos nuotraukos `Photo_DownloadFromPhone()`), TJpgDec dekodavimo (JAU PATIKRINTA, kad naršyklės suspaustas baseline JPEG suderinamas — žr. aukščiau).~~ **IŠSPRĘSTA 2026-09-08** — žr. sekančią sesiją žemiau.
 2. **Baterijos ADC/procento rodymas** — ChatGPT konsultacija pažymėjo tai kaip BŪTINĄ PRIEŠ išleidžiant nuolatinio veikimo (ne deep-sleep) slideshow režimą realiam naudojimui, kitaip vartotojas tiesiog pamatys juodą ekraną be paaiškinimo, kai baterija išsikraus. Schemoje RASTAS realus dalintuvo santykis (`VBAT → R39(200K) → BAT_ADC → R42(100K) → GND`, t.y. BAT_ADC=VBAT/3), bet vartotojas dar NETURI fizinės baterijos rankose, tad formulė NEVERIFIKUOTA praktiškai — sąmoningai ATIDĖTA, kol baterija atvyks.
 3. **Kelios atskiros galerijos/albumai** — kol kas VISOS nuotraukos vienoje plokščioje `gallery/` — jei prireiks grupavimo, paprasčiausias papildymas — "Albumas" laukas (ta pati sidecar-failo idioma kaip aprašymas), NE atskira aplankų struktūra.
+
+## Sesija 2026-09-08 — Fizinio LCD ekrano galerijos slideshow (v1), swipe/gesto pamoka, du "trūkstamo glifo" bug'ai
+
+Tęsinys nuo praėjusios sesijos — admin puslapio įkėlimo infrastruktūra jau veikė, šioje sesijoje ESP32 PATS pradėjo atsisiųsti ir rodyti nuotraukas fiziniame 3.5" LCD ekrane. Vartotojo užduotis: *"Pajunk esp-32 'Galerija' ir bandom pamatyti nuotraukas"*.
+
+### `APP_STATE_SLIDESHOW` — nauja busena, TYČIA be auto-timeout
+
+`app_state_machine.h` gavo naują `APP_STATE_SLIDESHOW` narį. "Kas tu?" ekrano "🖼️ Galerija" mygtukas (anksčiau — placeholder) dabar iškviečia tikrą `onGalleryPressed()`:
+1. `HTTPClient GET /gallery/list` (JSON, `ArduinoJson`) → užpildo `s_galleryFiles/s_galleryNames/s_galleryDescriptions` masyvus.
+2. Kiekvienai nuotraukai `HTTPClient GET /gallery/photo?file=...` → **ta pati dviejų fazių idioma kaip `Photo_DownloadFromPhone()`** (`http.writeToStream()` į laikiną LittleFS failą, tada grynas Arduino `File` API skaitymas į PSRAM buferį) — sąmoningai NE ranka rašytas `WiFiClient::read()` ciklas, nes pastarasis NEIŠBANDYTAS, o šitas jau ĮRODYTAI veikia.
+3. Rodoma per `UI_ShowPhoto()`, kas 6s (`SLIDESHOW_INTERVAL_MS`) automatiškai pereinama prie kitos nuotraukos (`AppStateMachine_Update()` `APP_STATE_SLIDESHOW` atvejis).
+
+Busena TYČIA NEĮTRAUKTA į jokį neveiklumo timeout'ą (skirtingai nuo `GREETING`/`APP_STATE_SHOWING_PHOTO`) — demonstravimas turi tęstis, kol vartotojas PATS paspaudžia Meniu. Tai reiškia, kad slideshow'as ilgai veikiantis realiu maitinimu PALIEKA atvirą baterijos klausimą — žr. aukščiau punktą #2 (dar neišspręsta, nes nėra fizinės baterijos).
+
+**HTTPClient tiesiogiai LVGL mygtuko paspaudimo įvykyje** — visi šie blokuojantys tinklo kvietimai vyksta TIESIOGIAI `onGalleryPressed()`/`showGallerySlide()` viduje, kviečiami iš LVGL `LV_EVENT_CLICKED` konteksto (main loop/core 1) — TA PATI saugi idioma, kaip jau naudojama `onMessageSenderPicked()` su `Audio_RecordToFile()`. Skirtingai nuo `Photo_CaptureAndUpload()`/`Photo_DownloadFromPhone()` (kurie kviečiami per "atidėk į loop()" schemą, nes jų iškvietimas ateina iš AsyncWebServer callback'o, kur blokuojantis HTTP sukeltų `task_wdt` resetą) — LVGL mygtuko paspaudimo kontekstas tam apribojimui NEPRIKLAUSO.
+
+### JPEG SOF0 dydžio skaitymas — kodėl PASITIKĖTA (skirtingai nuo kameros kadro)
+
+Ankstesnė šio projekto diagnostika (žr. `main.cpp` `Photo_DownloadFromPhone()` komentarą) nustatė, kad OV5640 kameros aparatinis JPEG koderis po runtime `framesize` pakeitimo įrašo SENĄ, MELAGINGĄ dydį SOF0 žymeklio baituose — todėl ten dydis PAIMAMAS iš žinomos konstantos, NE iš paties JPEG. Galerijos nuotraukos, priešingai, sukurtos naršyklės `<canvas>.toBlob()` (standartinis, teisingas kodavimas), tad `parseJpegDimensions()` (`app_state_machine.cpp`) gali SAUGIAI skaityti realų plotį/aukštį TIESIOGIAI iš SOF0/SOF2 žymeklio baitų — būtina, nes skirtingai nuo fiksuoto 320×240 kameros kadro, kiekviena galerijos nuotrauka gali būti kito dydžio (stebėta: 640×427, 380×380).
+
+### `UI_ShowPhoto()` perrašyta — nebe LVGL RAW+TJpgDec, o tas pats "iš anksto sumažink" dekodavimas kaip SCANNING miniatiūra
+
+Vartotojo pastaba, pirmą kartą pamačius didelę nuotrauką ekrane: *"Pasislepia meniu butona, gal Gali zemiau foto"*. Priežastis: `UI_ShowPhoto()` anksčiau perduodavo JPEG duomenis TIESIOGIAI LVGL `lv_image` objektui (`LV_COLOR_FORMAT_RAW`, LVGL pati kviečia TJpgDec pilnam dekodavimui) — veikė tvarkingai TIK fiksuoto mažo (320×240) `Photo_DownloadFromPhone()` kadro atveju, bet 640px pločio galerijos nuotraukos praktiškai UŽDENGDAVO VISĄ ekraną, įskaitant TOP_RIGHT Meniu mygtuką (piešiamas VĖLIAU nei mygtukas, tad z-eilėje virš jo).
+
+FIX: `UI_ShowPhoto()` dabar naudoja TĄ PAČIĄ `lv_tjpgd_decode_thumbnail()` funkciją (`lv_tjpgd.c`, jau anksčiau parašyta ir įrodyta SCANNING miniatiūrai) — apskaičiuoja "telpa į dėžutę" (aspect-preserving fit) tikslinį dydį, PATI dekoduoja į TIKSLIAI tokio dydžio RGB888 buferį PRIEŠ atiduodama LVGL, palikdama fiksuotas laisvas juostas: `PHOTO_TOP_RESERVE_H` (80px, Meniu mygtukui) ir `PHOTO_BOTTOM_CAPTION_H` (64px, vardo/aprašymo užrašui). Tai PRATĘSIA jau šiame projekte skausmingai išmoktą pamoką — LVGL įmontuotas TJpgDec+scale kelias dideliems vaizdams turi realių bug'ų (žr. `UI_ScanningShowPhoto()` istoriją) — geriau PATIEMS kontroliuoti dekodavimą į jau žinomo dydžio buferį.
+
+Ekrano išdėstymas (vartotojo pastaba, iteruota du kartus — pirma bandyta M mygtuką perkelti apačion, uzrašą į viršų, VĖLIAU grąžinta atvirkščiai): **M mygtukas TOP_RIGHT** (ta pati vieta kaip visuose kituose ekranuose, `createMenuButton()`), **vardo/aprašymo užrašas APAČIOJE** (`UI_SetPhotoCaption()`).
+
+### Du "trūkstamo glifo" (□ kvadratukas) bug'ai — em brūkšnys ir emoji NEPRIKLAUSO custom fontui
+
+Projekto custom lietuviškas šriftas (`lv_fonts_lt.h`) sugeneruotas TIK su siauru simbolių rėžiu (`0x20-0x7E` + konkretūs lietuviški taškai) — BET KOKS kitas simbolis (net jei LVGL turi `--lv-fallback` į `lv_font_montserrat_N`) šiame projekte rodomas kaip □ ("trūkstamo glifo") dėžutė, ne kaip tikras ženklas ar tuščia vieta. Rasti DU tokie atvejai:
+1. **Vardo/aprašymo užrašo skirtukas** — pradžioje naudotas em brūkšnys "—" (U+2014, Unicode "General Punctuation" blokas, NE Basic Latin) — FIX: paprastas ASCII brūkšnys "-".
+2. **Balso žinutės įrašymo atbulinio skaitliuko ikona** — 🔴 (U+1F534 emoji) — FIX: pašalinta, paliktas grynas tekstas `"Įrašoma: %lus"`.
+
+**Pamoka ateičiai**: šiame projekte VISADA naudoti arba `LV_SYMBOL_*` LVGL konstantas (garantuotai yra numatytajame šrifte), arba grynus ASCII/lietuviškus (custom fonto rėžyje esančius) simbolius bet kokiam tekstui, kuris rodomas per `lv_font_lt_*` — NIEKADA raw Unicode emoji/specialiąją skyrybą be patikrinimo.
+
+### Atsitiktinė nuotraukų tvarka
+
+Vartotojo pastaba: *"padaryk, kad foto atsirastų ir rodytų RANDOM"*. `shuffleGalleryOrder()` (`app_state_machine.cpp`) — Fisher-Yates maišymas VISOMS TRIMS lygiagrečiai indeksuojamoms masyvoms (failas/vardas/aprašymas), kviečiamas KARTA po kiekvieno `/gallery/list` atsisiuntimo (`random()`, Arduino ESP32 branduolio aparatinis TRNG). Tvarka FIKSUOJAMA vienai sesijai — automatinis kas-6s keitimas tiesiog eina per TĄ PAČIĄ (bet kiekvieną kartą naujai išmaišytą) seką.
+
+### Galerijos atidarymo "grįžta į Meniu" glitch
+
+Vartotojo pastaba: *"Po 'Kraunama galerija' porai kadrų 0,2 sek pasirodo pilnas Meniu puslapis, tada prasideda Galerijos foto"*. Dvi atskiros priežastys, abi ištaisytos:
+1. **Loginė klaida** — `onGalleryPressed()` anksčiau paslėpdavo "Kraunama..." overlay PRIEŠ kviesdamas `showGallerySlide()` (kuris PATS atlieka ANTRĄ, taip pat blokuojantį HTTP kvietimą — pačios pirmos nuotraukos atsisiuntimą). Per tą tarpą po paslėptu overlay vėl trumpam matydavosi "Kas tu?" ekranas. FIX: overlay pašalinamas TIK KAI jau žinomas galutinis rezultatas.
+2. **LVGL animacijos artefaktas** — likutinis ~0.2s blyksnis buvo pats `LV_SCR_LOAD_ANIM_FADE_IN` (300ms) perėjimas, kuris trumpai piešia naują ekraną VIRŠ dar matomo seno. FIX: `LV_SCR_LOAD_ANIM_NONE` (akimirksnis perjungimas) šiam konkrečiam ekranui — turinys jau paruoštas iš anksto, tad staigus perjungimas nepastebimas kaip trūkčiojimas.
+
+### Rankinio nuotraukos keitimo saga — gestas SUKABINO įrenginį, rodyklės pasirodė nejautrios, galiausiai atsisakyta
+
+Ilgiausia šios sesijos diagnostika, verta atskiro paminėjimo kaip PROJEKTO PAMOKA:
+
+1. **Bandymas #1 — LVGL `LV_EVENT_GESTURE`** (`lv_indev_get_gesture_dir()`, kairė/dešinė brauktukai). Pati gesto aptikimo dalis PATIKRINTA VEIKĖ (Serial log patvirtino: kryptis ir sekančios nuotraukos indeksas keitėsi teisingai) — bet vartotojui atrodė, kad "nieko nevyksta", nes iki nuotraukos atsisiuntimo (1-3s HTTP) ekranas likdavo vizualiai nepakitęs.
+2. **Bandymas skubiam atsakymui** — pridėtas tarpinis `"..."` overlay, rodomas IŠ KARTO gesto įvykio viduje. Rezultatas: **VISAS įrenginys pakibdavo** (*"viskas pakimba, nedirba net galerija mygtukas, net PWR"*). ŠAKNIS: `UI_ShowMessageRecordingOverlay()` viduje priverstinai kviečia `lv_refr_now(NULL)` — saugu iš PAPRASTO `LV_EVENT_CLICKED` konteksto (jau naudojama kitur), bet `LV_EVENT_GESTURE` iškviečiamas GILIAI LVGL `indev` apdorojimo viduje (`lv_timer_handler()` → `indev` skaitymas → `indev_gesture()`) — priverstinis pilnas perpiešimas TOKIAME giliame taške sukelia LVGL vidinį re-entrancy. **TAI TA PATI klasės klaida**, kaip anksčiau šiame projekte ištirtas rekursyvus `lv_timer_handler()` iš `eye_renderer.cpp` sequencer'io vidaus (žr. "GALUTINĖ IŠVADA" aukščiau) — LVGL nėra re-entrant, ir bet koks priverstinis redraw iš giliai LVGL vidinio konteksto yra pavojingas, NEPRIKLAUSOMAI nuo to, kurią konkrečią funkciją naudoji tam iškviesti.
+3. **Bandymas #2 — paprasti ◀/▶ mygtukai** (`LV_EVENT_CLICKED`, SAUGUS kontekstas) — VEIKĖ be jokio kabinimosi, net su `lv_obj_set_ext_click_area()` padidintu paspaudimo plotu. BET vartotojas įvertino kaip per nejautrius liestiniam ekranui.
+4. **Galutinis sprendimas**: *"labai nejautrios rodyklės, paprasčiau leisti automatiškai keistis. Išimk rodykles ir swipe."* — VISAS rankinio keitimo kelias (gestas IR mygtukai) PAŠALINTAS. Galerijoje nuotraukos keičiasi TIK automatiškai kas `SLIDESHOW_INTERVAL_MS` (6s).
+
+**Bendra pamoka**: `lv_refr_now()`/`lv_timer_handler()` (ir bet koks kitas priverstinio perpiešimo kvietimas) saugus TIK iš paviršutinių LVGL įvykių kontekstų (paprastas mygtuko `LV_EVENT_CLICKED`), NIEKADA iš gilesnių vidinio apdorojimo taškų (`LV_EVENT_GESTURE`, LVGL sequencer/timer callback'ų vidaus).
+
+### M (Meniu) mygtuko jautrumo padidinimas
+
+Vartotojo pastaba: *"Ar gali padidinti rodyklių jautrumą... Bet padidink M Meniu butono jautrumą, nedidindamas butono"*. `createMenuButton()` (`ui_screens.cpp`, BENDRA visiems ekranams) papildyta `lv_obj_set_ext_click_area(btn, 25)` — LVGL standartinis būdas pridėti NEMATOMĄ papildomą paspaudimo zoną aplink matomą mygtuko ribą, nekeičiant nei vizualinio dydžio, nei pozicijos.
+
+### Kas dar neveikia / atviri klausimai (papildyta)
+
+1. **Veido atpažinimo greitis** — vartotojo pastaba *"labai ilgai atpažįsta foto"*, Serial log patvirtino iki 30.2s vieną užklausą. TAI SENA, ŽINOMA kliūtis (telefono atpažinimo serveris + WiFi hotspot ryšys), NE naujas šios sesijos regresas — DAR NETIRTA/NESPRĘSTA, reikės atskiros diagnostikos sesijos (galimos priežastys: telefono ML modelio inference laikas, WiFi hotspot apkrova vienu metu veikiant IR kaip AP, IR kaip serveriui).
+2. Baterijos ADC/procentas ir keli albumai — vis dar atidėta, žr. punktus #2/#3 aukščiau (nepasikeitę).

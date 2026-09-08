@@ -24,8 +24,20 @@
 // UI_RefreshNameButtonBadges()) — groja TIK TO zmogaus laukiancia zinute.
 // STANDBY garsiakalbio mygtukas tiesiog atidaro Meniu (kviecia
 // `onMenuPressed`), kur vartotojas jau pats pasirenka KONKRETU zmogu.
+// 2026-09-08 (vartotojo pastaba: "Pajunk esp-32 'Galerija' ir bandom
+// pamatyti nuotraukas") — "Kas tu?" ekrano "Galerija" mygtukas (anksciau
+// vien placeholder, zr. galleryBtnEventCb() ui_screens.cpp) dabar iskvieicia
+// SITA callback'a — app_state_machine.cpp atsako uz P10 galerijos sarasa/
+// nuotrauku atsisiuntima ir APP_STATE_SLIDESHOW busena (zr. app_state_machine.h).
+// 2026-09-08 (vartotojo pastaba: rankinis nuotraukos keitimas "Padarykime
+// nuotraukų swipe" -> gestas SUKABINDAVO irengini -> rodyklės pasirode per
+// nejautrios liestiniam ekranui -> "paprasčiau leisti automatiškai keistis.
+// Išimk rodykles ir swipe.") — ISBANDYTA IR ATSISAKYTA, todel SIO callback'o
+// CIA NEBELIKO. Galerijoje nuotraukos keiciasi TIK automatiskai (zr.
+// app_state_machine.cpp SLIDESHOW_INTERVAL_MS).
 void UI_Screens_Init(void (*onMenuPressed)(), void (*onRecordMessagePicked)(RecognizedPerson sender),
-                      void (*onPersonBadgeTapped)(RecognizedPerson sender));
+                      void (*onPersonBadgeTapped)(RecognizedPerson sender),
+                      void (*onGalleryPressed)());
 
 void UI_ShowStandby();                              // 1. Budejimo rezimas
 void UI_ShowScanning();                              // "aptiktas judesys, atpazistama..."
@@ -94,6 +106,12 @@ void UI_ShowCameraFlashOff();
 // rodomas — nuosavybe islieka main.cpp puseje (nekeiciama/neatlaisvinama,
 // kol nera naujos nuotraukos). Kviesti PO sekmingo download.
 void UI_ShowPhoto(const uint8_t *jpegData, size_t jpegLen, uint16_t width, uint16_t height);
+
+// 2026-09-08 (vartotojo pastaba: "ar prie nuotrauku bus uzrasai, juk raseme
+// adminkeje ir vardas ir aprasymas?") — rodo teksta rezervuotoje juostoje
+// VIRS nuotraukos. Kviesti PO KIEKVIENO UI_ShowPhoto() (kuris savo ruoztu
+// isvalo visa ekrana), tuscias/nullptr = niekas nerodoma.
+void UI_SetPhotoCaption(const char *text);
 
 // 2026-09-07 — "visiems" balso žinučių paštadėžė (žr. README naują skyrių):
 // bet kas gali per "Kas tu?" -> "Palikti žinutę" irasyti trumpa balso

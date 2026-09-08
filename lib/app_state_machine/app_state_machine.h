@@ -40,6 +40,17 @@ enum AppState {
     // toliau elgesi taip, lyg niekas nebutu pasikeite (backlight
     // nesutampa, meniu mygtukas veike nenuosekliai). FIX: TIKRA busena.
     APP_STATE_SHOWING_PHOTO,
+    // 2026-09-08 (vartotojo pastaba: "Pajunk esp-32 'Galerija' ir bandom
+    // pamatyti nuotraukas") — "Kas tu?" ekrano "Galerija" mygtukas dabar
+    // atsisiuncia P10 telefono seimos nuotrauku galerijos sarasa
+    // (SECRET_SERVER_GALLERY_BASE_URL + "/gallery/list") ir rodo nuotraukas
+    // paeiliui, automatiskai keisdamas kas kelias sekundes (zr.
+    // app_state_machine.cpp SLIDESHOW_INTERVAL_MS). TYCIA NEISEINA i STANDBY
+    // pagal neveiklumo timeout'a (skirtingai nuo GREETING/SHOWING_PHOTO) —
+    // demonstravimas turi teketi, kol vartotojas PATS paspaudzia Meniu
+    // mygtuka (zr. README "Kas dar neveikia" del baterijos% klausimo, kuris
+    // sia funkcija paveiks tik VELIAU, kai bus fizine baterija).
+    APP_STATE_SLIDESHOW,
 };
 
 void AppStateMachine_Init();

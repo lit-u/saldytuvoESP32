@@ -4,9 +4,14 @@
 #include "lcd_st7796.h"
 #include "eye_renderer.h"
 #include "audio_output.h"
+#include "secrets.h"
 #include <lvgl.h>
 #include <esp_heap_caps.h>
 #include <LittleFS.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <string.h>
 
 // 2026-09-06: JPEG->maza RGB888 dekodavimas (lv_tjpgd.c naujas viesas
 // funkcija) — zr. ui_screens.h UI_ScanningShowPhoto() komentara del
@@ -29,6 +34,7 @@ static bool s_captureStarted = false;
 static void onWakeSequenceDone();
 static void onPersonPicked(RecognizedPerson person);
 static void onMenuPressed();
+static void onGalleryPressed();
 
 // Kiek laiko laukti mygtuko paspaudimo PICKING ekrane (vartotojo pastaba
 // 2026-09-05: "Kas tu?" mygtukai po nesekmingo atpazinimo), pries pasiduodant
@@ -146,6 +152,294 @@ static void onMenuPressed() {
     s_state = APP_STATE_PICKING;
 }
 
+// 2026-09-08 (vartotojo pastaba: "Pajunk esp-32 'Galerija' ir bandom
+// pamatyti nuotraukas") — "Kas tu?" ekrano "Galerija" mygtukas. Skirtingai
+// nuo Photo_DownloadFromPhone() (main.cpp, VIENAS FIKSUOTO 320x240 dydzio
+// failas, atsisiustas per "atidek i loop()" schema, nes kviecimas atkeliauja
+// is AsyncWebServer callback'o) — CIA HTTPClient kvietimai vyksta TIESIOGIAI
+// LVGL mygtuko paspaudimo ivykio kontekste (main loop/core 1, ta pati saugi
+// idioma kaip onMessageSenderPicked()/Audio_RecordToFile() zemiau), tad
+// joks atidejimas i loop() nereikalingas.
+static const uint32_t SLIDESHOW_INTERVAL_MS = 6000;
+static const int GALLERY_MAX_ITEMS = 30;
+static char s_galleryFiles[GALLERY_MAX_ITEMS][48];
+// 2026-09-08 (vartotojo pastaba: "ar prie nuotrauku bus uzrasai, juk raseme
+// adminkeje ir vardas ir aprasymas?") — abu laukai atkeliauja TIESIOGIAI is
+// /gallery/list JSON (zr. RecognitionServer.kt handleGalleryList()), rodomi
+// per UI_SetPhotoCaption() (zr. showGallerySlide()). "description" serverio
+// puseje NEAPRIBOTAS ilgis — cia nukertame, kad tilptu i nedidele LCD juosta.
+static char s_galleryNames[GALLERY_MAX_ITEMS][48];
+static char s_galleryDescriptions[GALLERY_MAX_ITEMS][96];
+static int s_galleryCount = 0;
+static int s_galleryIndex = 0;
+static uint32_t s_gallerySlideChangeMs = 0;
+static uint8_t *s_galleryPhotoBuf = nullptr;
+static size_t s_galleryPhotoLen = 0;
+static uint16_t s_galleryPhotoW = 0;
+static uint16_t s_galleryPhotoH = 0;
+
+// Paprastas RFC3986 "percent-encode" — GALLERY nuotrauku vardai gali tureti
+// tarpu/lietuviskas raides (zr. RecognitionServer.kt handleGalleryUpload()
+// safeName regex, kuris JU NEISVALO). Atitinka JS puses encodeURIComponent()
+// (zr. main.cpp galleryRefresh()), kad abi puses sutartu del to paties URL.
+static void urlEncodeAppend(String &out, const char *s) {
+    static const char *kHexDigits = "0123456789ABCDEF";
+    for (const uint8_t *p = (const uint8_t *)s; *p; p++) {
+        uint8_t c = *p;
+        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+        if (unreserved) {
+            out += (char)c;
+        } else {
+            out += '%';
+            out += kHexDigits[(c >> 4) & 0xF];
+            out += kHexDigits[c & 0xF];
+        }
+    }
+}
+
+// Nuskaito plotį/aukštį TIESIOGIAI is JPEG SOF0/SOF2 zymeklio baitu.
+// SKIRTINGAI nuo main.cpp Photo_DownloadFromPhone() komentaro apie OV5640
+// aparatinio JPEG koderio "meluojanti" SOF (kuris NEATITINKA realaus
+// dekoduoto turinio po runtime framesize pakeitimo) — galerijos nuotraukos
+// yra sukurtos NARSYKLES <canvas>.toBlob() (zr. main.cpp compressImage()),
+// t.y. standartinio, teisingo JPEG kodavimo, tad SOF baitais CIA PASITIKETI
+// GALIMA.
+static bool parseJpegDimensions(const uint8_t *data, size_t len, uint16_t *outW, uint16_t *outH) {
+    if (len < 4 || data[0] != 0xFF || data[1] != 0xD8) return false;  // SOI
+    size_t pos = 2;
+    while (pos + 4 <= len) {
+        if (data[pos] != 0xFF) { pos++; continue; }
+        uint8_t marker = data[pos + 1];
+        if (marker == 0xD8 || marker == 0xD9) { pos += 2; continue; }         // SOI/EOI
+        if (marker >= 0xD0 && marker <= 0xD7) { pos += 2; continue; }         // RSTn
+        if (marker == 0x01) { pos += 2; continue; }                          // TEM
+        if (marker == 0xFF) { pos += 1; continue; }                          // fill byte pries tikra zymekli
+        uint16_t segLen = (data[pos + 2] << 8) | data[pos + 3];
+        bool isSof = (marker >= 0xC0 && marker <= 0xCF) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
+        if (isSof) {
+            if (pos + 9 > len) return false;
+            *outH = (data[pos + 5] << 8) | data[pos + 6];
+            *outW = (data[pos + 7] << 8) | data[pos + 8];
+            return true;
+        }
+        if (marker == 0xDA) break;  // SOS — po sito nebera daugiau antraciu
+        pos += 2 + segLen;
+    }
+    return false;
+}
+
+// 2026-09-08 (vartotojo pastaba: "padaryk, kad foto atsirastų ir rodytų
+// RANDOM") — Fisher-Yates maisymas VISOMS TRIMS lygiagreciai indeksuojamoms
+// masyvoms (failas/vardas/aprasymas) — kviesti KARTA, is karto po sarasu
+// uzpildymo (zr. downloadGalleryList() pabaiga). `random(0, i+1)` — Arduino
+// ESP32 branduolio aparatinis TRNG (esp_random() viduje), NE pseudo-random
+// be seed'o poreikio.
+static void shuffleGalleryOrder() {
+    for (int i = s_galleryCount - 1; i > 0; i--) {
+        int j = random(0, i + 1);
+        if (j == i) continue;
+        char tmp[96];
+        strcpy(tmp, s_galleryFiles[i]);
+        strcpy(s_galleryFiles[i], s_galleryFiles[j]);
+        strcpy(s_galleryFiles[j], tmp);
+
+        strcpy(tmp, s_galleryNames[i]);
+        strcpy(s_galleryNames[i], s_galleryNames[j]);
+        strcpy(s_galleryNames[j], tmp);
+
+        strcpy(tmp, s_galleryDescriptions[i]);
+        strcpy(s_galleryDescriptions[i], s_galleryDescriptions[j]);
+        strcpy(s_galleryDescriptions[j], tmp);
+    }
+}
+
+// Atsisiuncia "/gallery/list" JSON is P10 (zr. RecognitionServer.kt
+// handleGalleryList()), uzpildo s_galleryFiles/s_galleryCount.
+static bool downloadGalleryList() {
+    HTTPClient http;
+    String url = String(SECRET_SERVER_GALLERY_BASE_URL) + "/gallery/list";
+    http.begin(url);
+    http.setTimeout(15000);
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("[Gallery] /gallery/list: HTTP %d KLAIDA\n", httpCode);
+        http.end();
+        return false;
+    }
+    String payload = http.getString();
+    http.end();
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, payload);
+    if (err) {
+        Serial.printf("[Gallery] JSON parse klaida: %s\n", err.c_str());
+        return false;
+    }
+    JsonArray items = doc["items"].as<JsonArray>();
+    s_galleryCount = 0;
+    for (JsonObject item : items) {
+        if (s_galleryCount >= GALLERY_MAX_ITEMS) break;
+        const char *file = item["file"] | "";
+        if (!file[0]) continue;
+        strncpy(s_galleryFiles[s_galleryCount], file, sizeof(s_galleryFiles[s_galleryCount]) - 1);
+        s_galleryFiles[s_galleryCount][sizeof(s_galleryFiles[s_galleryCount]) - 1] = '\0';
+
+        const char *name = item["name"] | "";
+        strncpy(s_galleryNames[s_galleryCount], name, sizeof(s_galleryNames[s_galleryCount]) - 1);
+        s_galleryNames[s_galleryCount][sizeof(s_galleryNames[s_galleryCount]) - 1] = '\0';
+
+        const char *desc = item["description"] | "";
+        strncpy(s_galleryDescriptions[s_galleryCount], desc, sizeof(s_galleryDescriptions[s_galleryCount]) - 1);
+        s_galleryDescriptions[s_galleryCount][sizeof(s_galleryDescriptions[s_galleryCount]) - 1] = '\0';
+
+        s_galleryCount++;
+    }
+    Serial.printf("[Gallery] /gallery/list: rasta %d nuotrauku\n", s_galleryCount);
+    shuffleGalleryOrder();
+    return s_galleryCount > 0;
+}
+
+// Atsisiuncia VIENA nuotrauka i PSRAM buferi. TA PATI dvieju fazių idioma
+// kaip main.cpp Photo_DownloadFromPhone() (http.writeToStream() i LittleFS
+// laikina faila, tada grynas Arduino File API paskaitymas i PSRAM) — TIKSLI
+// pries tai jau IRODYTA schema, saugesne uz ranka rasyta WiFiClient::read()
+// ciklà (http.writeToStream() pati tvarko Content-Length/chunked skaityma).
+static bool downloadGalleryPhoto(const char *filename) {
+    String url = String(SECRET_SERVER_GALLERY_BASE_URL) + "/gallery/photo?file=";
+    urlEncodeAppend(url, filename);
+
+    HTTPClient http;
+    http.begin(url);
+    http.setTimeout(15000);
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("[Gallery] /gallery/photo (%s): HTTP %d KLAIDA\n", filename, httpCode);
+        http.end();
+        return false;
+    }
+    File f = LittleFS.open("/gallery_tmp.jpg", "w");
+    if (!f) {
+        Serial.println("[Gallery] nepavyko sukurti laikino failo.");
+        http.end();
+        return false;
+    }
+    http.writeToStream(&f);
+    f.close();
+    http.end();
+
+    File rf = LittleFS.open("/gallery_tmp.jpg", "r");
+    if (!rf) {
+        Serial.println("[Gallery] nepavyko atidaryti laikino failo PSRAM buferiui.");
+        return false;
+    }
+    size_t sz = rf.size();
+    uint8_t *buf = (uint8_t *)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
+    if (!buf) {
+        Serial.println("[Gallery] nepavyko isskirti PSRAM buferio.");
+        rf.close();
+        return false;
+    }
+    size_t readLen = rf.read(buf, sz);
+    rf.close();
+    if (readLen != sz) {
+        Serial.printf("[Gallery] nepilnas skaitymas: %u/%u baitu\n", (unsigned)readLen, (unsigned)sz);
+        heap_caps_free(buf);
+        return false;
+    }
+
+    uint16_t w = 0, h = 0;
+    if (!parseJpegDimensions(buf, sz, &w, &h)) {
+        Serial.println("[Gallery] nepavyko nuskaityti JPEG dydzio (SOF).");
+        heap_caps_free(buf);
+        return false;
+    }
+
+    if (s_galleryPhotoBuf) heap_caps_free(s_galleryPhotoBuf);
+    s_galleryPhotoBuf = buf;
+    s_galleryPhotoLen = sz;
+    s_galleryPhotoW = w;
+    s_galleryPhotoH = h;
+    Serial.printf("[Gallery] %s: OK (%ux%u, %u baitu)\n", filename, w, h, (unsigned)sz);
+    return true;
+}
+
+// Atsisiuncia+parodo s_galleryIndex nuotrauka, perjungia i APP_STATE_SLIDESHOW.
+// Kviesti IS PRADZIU (onGalleryPressed()) IR kas SLIDESHOW_INTERVAL_MS is
+// AppStateMachine_Update() (zr. APP_STATE_SLIDESHOW atveji).
+static void showGallerySlide() {
+    if (s_galleryCount == 0) return;
+    if (downloadGalleryPhoto(s_galleryFiles[s_galleryIndex])) {
+        EyeRenderer_StopSequence();
+        LCD_Backlight_Set(100);
+        UI_ShowPhoto(s_galleryPhotoBuf, s_galleryPhotoLen, s_galleryPhotoW, s_galleryPhotoH);
+        // "Vardas - aprašymas" (arba tik vardas, jei aprasymo nera) — zr.
+        // UI_SetPhotoCaption() komentara. DIAGNOZE 2026-09-08 (vartotojo
+        // pastaba: "kvadratukas atsiranda, tarp pavadinimo ir aprasymo nera
+        // skirtumo") — anksciau naudotas em-dash "—" (U+2014) NEPRIKLAUSO
+        // lv_font_lt_18 glifu rezui (0x20-0x7E + specifiniai lietuviski
+        // taskai, zr. lv_fonts_lt.h) — LVGL ji piese kaip "trukstamo glifo"
+        // □ dezute, tad vardas ir aprasymas atrodydavo susilieje i viena
+        // teksta be jokio matomo skirtuko. FIX: paprastas ASCII brukšnys.
+        const char *name = s_galleryNames[s_galleryIndex];
+        const char *desc = s_galleryDescriptions[s_galleryIndex];
+        char caption[160];
+        if (desc[0]) {
+            snprintf(caption, sizeof(caption), "%s - %s", name, desc);
+        } else {
+            snprintf(caption, sizeof(caption), "%s", name);
+        }
+        UI_SetPhotoCaption(caption);
+        s_state = APP_STATE_SLIDESHOW;
+    }
+    s_gallerySlideChangeMs = millis();
+}
+
+// 2026-09-08: rankinis nuotraukos keitimas ("swipe" -> gestas SUKABINDAVO
+// irengini (rekursyvus priverstinis lv_refr_now() is LVGL gesto ivykio
+// vidaus — ta pati klases klaida kaip anksciau istirtas rekursyvus
+// lv_timer_handler() is eye_renderer.cpp, zr. README "GALUTINĖ IŠVADA") ->
+// ◀/▶ mygtukai VEIKE, bet vartotojui pasirode nejautrus liestiniam ekranui)
+// — GALUTINAI ATSISAKYTA (vartotojo pastaba: "labai nejautrios rodyklės,
+// paprasčiau leisti automatiškai keistis. Išimk rodykles ir swipe."). Nuotraukos
+// galerijoje keiciasi TIK automatiskai — zr. APP_STATE_SLIDESHOW atveji
+// AppStateMachine_Update() funkcijoje (SLIDESHOW_INTERVAL_MS).
+
+// KLAIDA rasta 2026-09-08 (vartotojo pastaba: "paspaudus Galerija rašo
+// kraunama ir iškart grįžta atgal į meniu, o po 3 sek atidaro galerija") —
+// anksciau UI_HideMessageRecordingOverlay() buvo kviecaimas PRIES
+// showGallerySlide() (kuris pats atlieka ANTRA, taip pat BLOKUOJANTI HTTP
+// kvietima — pacios pirmos nuotraukos atsisiuntima). Paslepus overlay
+// PRIES tai, po juo esantis "Kas tu?" ekranas trumpam vel tapdavo matomas
+// (atrode kaip "grizo i meniu"), kol showGallerySlide() dar tebelaukdavo
+// tinklo atsakymo — TIK PASKUI ekranas persijungdavo i nuotrauka. FIX:
+// overlay lieka rodomas PER VISA laukima (abu HTTP kvietimus), pasalinamas
+// TIK KAI jau zinome baigtini rezultata (nuotrauka parodyta ARBA klaida).
+static void onGalleryPressed() {
+    UI_ShowMessageRecordingOverlay(LV_SYMBOL_IMAGE " Kraunama galerija...");
+    bool ok = downloadGalleryList();
+    if (!ok) {
+        UI_ShowMessageRecordingOverlay("Nėra nuotraukų :(");
+        delay(1500);
+        UI_HideMessageRecordingOverlay();
+        return;  // liekame "Kas tu?" ekrane (Meniu jau ir taip cia)
+    }
+    s_galleryIndex = 0;
+    showGallerySlide();  // overlay VIS DAR rodomas per sio (antro) kvietimo laika
+    if (s_state == APP_STATE_SLIDESHOW) {
+        // Ekranas jau persijunge i nuotrauka (UI_ShowPhoto() -> kitas
+        // s_scrPhoto) — overlay liko ant SENOJO (dabar nebematomo) "Kas
+        // tu?" ekrano, saugu ji ten pat paslepti (tik tvarkos sumetimais).
+        UI_HideMessageRecordingOverlay();
+    } else {
+        // Sarasas atsisiunte, bet PIRMOS nuotraukos parsisiuntimas nepavyko
+        // (tinklo trikčiai) — informuojame, likusi busena nepakeista.
+        UI_ShowMessageRecordingOverlay("Nepavyko atsisiųsti nuotraukos :(");
+        delay(1500);
+        UI_HideMessageRecordingOverlay();
+    }
+}
+
 // 2026-09-07 (vartotojo pastaba: "vaikams be adminkes galimybe irasyti
 // trumpa teksta... Meniu skyriuje - visiems skirta"; VELIAU: "tegu būna
 // neištrinta, nes gali norėti daug žmonių išklausyti. Išsitrina tada, kai
@@ -172,7 +466,11 @@ static void inboxPathFor(RecognizedPerson person, char *outPath, size_t outSize)
 static void onRecordTick(uint32_t elapsedS, uint32_t totalS) {
     uint32_t remaining = (totalS > elapsedS) ? (totalS - elapsedS) : 0;
     char buf[24];
-    snprintf(buf, sizeof(buf), "🔴 %lus", (unsigned long)remaining);
+    // 2026-09-08 (vartotojo pastaba: "lieka kvadratelis... ant countdown") —
+    // raudono apskritimo emoji (🔴, U+1F534) NEPRIKLAUSO lv_font_lt_* glifu
+    // rezui (zr. UI_SetPhotoCaption() analogiska klaida su em-dash) — tas
+    // pats "trukstamo glifo" □ simptomas. FIX: paprastas ASCII tekstas.
+    snprintf(buf, sizeof(buf), "Įrašoma: %lus", (unsigned long)remaining);
     UI_ShowMessageRecordingOverlay(buf);
 }
 
@@ -416,7 +714,7 @@ static void enterGreeting(RecognizedPerson person) {
 }
 
 void AppStateMachine_Init() {
-    UI_Screens_Init(onMenuPressed, onMessageSenderPicked, onPersonBadgeTapped);
+    UI_Screens_Init(onMenuPressed, onMessageSenderPicked, onPersonBadgeTapped, onGalleryPressed);
     FaceRecognition_Init();
     enterStandby();
 }
@@ -550,6 +848,17 @@ void AppStateMachine_Update(bool motionDetected) {
             // energijos kaina priimtina).
             if (!motionDetected && (millis() - s_lastMotionMs > PHOTO_AWAKE_TIMEOUT_MS)) {
                 enterStandby();
+            }
+            break;
+
+        case APP_STATE_SLIDESHOW:
+            // TYCIA JOKIO neveiklumo timeout'o (zr. app_state_machine.h
+            // komentara) — tik paeiliui keiciamos nuotraukos, iseinama TIK
+            // per Meniu mygtuka (jis yra kiekviename UI_ShowPhoto() ekrane,
+            // zr. ui_screens.cpp createMenuButton(s_scrPhoto)).
+            if (millis() - s_gallerySlideChangeMs > SLIDESHOW_INTERVAL_MS) {
+                s_galleryIndex = (s_galleryIndex + 1) % s_galleryCount;
+                showGallerySlide();
             }
             break;
     }
