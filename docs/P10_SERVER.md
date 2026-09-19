@@ -15,6 +15,7 @@ Huawei P10 VTR-L29 / Android 9 / EMUI 9.1
     ├── wake lock
     ├── runit (termux-services)
     │   ├── SSH :8022
+    │   ├── Mosquitto MQTT :1883 (native Termux, su autentifikacija)
     │   └── Ubuntu/proot
     │       └── Home Assistant Core :8123
     └── Termux:Boot 0.8.1 → boot script → wake lock + runit
@@ -34,6 +35,7 @@ ESP32-S3 192.168.43.250 → HTTP JPEG → P10 192.168.43.51:5000/recognize
 | Termux:Boot | 0.8.1, F-Droid; parašas suderinamas su įdiegtu Termux; pirmą kartą paleistas |
 | Priežiūra | termux-services 0.13-1, runit 2.1.2-4; ne systemd |
 | SSH | OpenSSH, `:8022`, atskiras ED25519 raktas; password ir keyboard-interactive autentifikacija išjungtos |
+| MQTT | Native Termux Mosquitto 2.1.2 (paketas 2.1.2-2), runit; anonymous uždraustas; [docs/MQTT.md](MQTT.md) |
 | proot-distro | 5.8.0 |
 | Ubuntu | 24.04.5 LTS ARM64 per proot; root vartotojas svečio aplinkoje nėra Android root |
 | Sisteminis Python | `/usr/bin/python3` → Python 3.12.3; nepakeistas |
@@ -41,11 +43,13 @@ ESP32-S3 192.168.43.250 → HTTP JPEG → P10 192.168.43.51:5000/recognize
 | Home Assistant | Core 2026.9.2, HTTP `0.0.0.0:8123` |
 | Tailscale | Įdiegtas Android sluoksnyje, anksčiau konfigūruotas `192.168.43.0/24` subnet router. Dabartinis VPN pasiekiamumas šiame etape NOT TESTED; ankstesnėje diagnostikoje P10 buvo offline. LAN testas nepatvirtina Tailscale veikimo. |
 
-Linux GUI, X11, KDE/XFCE, Wine ir GPU acceleration nenaudojami. MQTT ir HACS neįdiegti. HA Core venv/proot diegimas yra šio projekto prižiūrimas sprendimas, ne oficialiai palaikomas HA OS/Container diegimo būdas. HA neperima Kotlin recognition funkcijos.
+Linux GUI, X11, KDE/XFCE, Wine ir GPU acceleration nenaudojami. MQTT brokeris įdiegtas; HA MQTT integracija dar neprijungta, nes HA pradinis onboarding neužbaigtas. HACS ir Node-RED neįdiegti. HA Core venv/proot diegimas yra šio projekto prižiūrimas sprendimas, ne oficialiai palaikomas HA OS/Container diegimo būdas. HA neperima Kotlin recognition funkcijos.
 
 ## Paleidimas ir proceso atsistatymas
 
 Android boot → Termux:Boot → `00-p10-services` → `termux-wake-lock` → `start-services.sh` → runit → sshd ir Ubuntu/proot/HA.
+
+2026-09-19 pridėtas native Termux Mosquitto runit servisas. Ankstesni VERIFIED reboot testai apima Kotlin/SSH/HA; naujo MQTT proceso SIGKILL recovery PASS, jo paleidimas po tikro telefono reboot dar netestuotas (šiame etape reboot nedarytas). Esamas boot skriptas nepakeistas.
 
 Boot skripto faktinis turinys:
 
@@ -187,6 +191,10 @@ Ankstesnio reboot testo ESP32 FAIL priežastis, **vartotojo patvirtinimu**, buvo
 
 ## Tinklas ir Windows maršrutas
 
+### MQTT etapo matavimai (2026-09-19)
+
+Brokeris :1883 pasiekiamas LAN, anonymous ir blogas slaptažodis atmesti. Autentifikuotas publish/subscribe prieš ir po SIGKILL PASS; runit atkūrė procesą. Kotlin `/health`, HA HTTP ir SSH PASS, esami SSH/HA PID nepakeisti. Brokerio RSS 5,568 KiB (~5.4 MiB). Android available RAM prieš/po: 1,958,996 / 1,948,776 KiB (~1.868 / 1.858 GiB); laisva saugykla: 38,889,648 / 38,879,296 KiB (~37.088 / 37.078 GiB). Momentinis skirtumas ~10 MiB RAM ir ~10.1 MiB disko nėra izoliuotas ilgalaikis brokerio sunaudojimo matavimas. Išsamūs testai, keliai ir rollback — [MQTT.md](MQTT.md).
+
 P10 ir ESP32 yra P20 Pro hotspot `192.168.43.0/24` tinkle. Laptopo patikrintas Wi-Fi IP `192.168.43.162`, gateway `192.168.43.1`.
 
 Tailscale laptopui pateiktas to paties `192.168.43.0/24` tinklo maršrutas konfliktavo su vietiniu Wi-Fi: srautas į P10 buvo nukreipiamas per Tailscale, o Chrome gaudavo timeout, nors telefone `127.0.0.1:8123` veikė.
@@ -253,7 +261,7 @@ Recognition testui naudoti lokaliai turimą leidžiamą JPEG, `POST /recognize`,
 
 - Nuolatinis Windows/Tailscale persidengiančių maršrutų sprendimas.
 - Tailscale realaus nuotolinio pasiekiamumo ir paleidimo po reboot patikra atskirai nuo LAN.
-- MQTT vėliau; HACS vėliau. Šie komponentai dabar neįdiegti.
+- MQTT brokeris paruoštas; užbaigti HA onboarding ir per standartinę MQTT integraciją prijungti brokerį, tada patikrinti MQTT → HA. MQTT paleidimo po reboot testas atskirai. HACS vėliau, dabar neįdiegtas.
 - `ffmpeg` ir `libturbojpeg` tik jei prireiks atitinkamų funkcijų. Jų nebuvimo pranešimai HA loguose žinomi; pilnos minimalios HA inicializacijos neblokuoja. Nediegti vien dėl logų išvalymo.
 - Neatnaujinti HA/Python ir nekeisti sisteminio Python vien dėl būsimos funkcijos.
 
