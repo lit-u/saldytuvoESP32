@@ -1,6 +1,14 @@
 # Išmanusis šaldytuvo terminalas
 
-Autonominis IoT virtuvės terminalas šeimai, ESP32-S3-CAM-OVxxxx (Waveshare) plokštėje. PlatformIO + Arduino framework. Standalone — jokio Home Assistant ar išorinio serverio.
+IoT virtuvės terminalas šeimai, ESP32-S3-CAM-OVxxxx (Waveshare) plokštėje. PlatformIO + Arduino framework. Veido atpažinimą ir bendrą failų saugyklą aptarnauja vietinis Huawei P10 serveris.
+
+## Dabartinė P10 serverio būsena (2026-09-19)
+
+P10 / Android 9 veikia Kotlin AI serveris `:5000`. Greta jo Termux su wake lock ir runit prižiūri SSH `:8022` bei Ubuntu/proot aplinkoje veikiantį Home Assistant Core `:8123`. Tailscale skirtas nuotolinei prieigai; laptopo vietiniam ryšiui šiuo metu naudojamas laikinas Wi-Fi maršrutas.
+
+Termux/SSH/HA atsistatymas po tikro Android reboot patvirtintas. Kotlin `BOOT_COMPLETED` **implemented, reboot verification pending**: kodas įdiegtas, duomenys išsaugoti, `/health` ir trys recognition testai PASS, tačiau antras reboot dar neatliktas. ESP32 `/admin` pasiekiamas iš P10 ir laptopo per Wi-Fi.
+
+**P10 posistemio SOURCE OF TRUTH: [docs/P10_SERVER.md](docs/P10_SERVER.md)** — architektūra, versijos, tikrieji keliai, diagnostika, testai ir TODO. Žemiau išsaugoti ankstesnių sesijų įrašai yra darbų istorija; jų tuometinės būsenos teiginiai nepakeičia šios dabartinės santraukos ir P10 dokumento.
 
 ## Techninė įranga
 
