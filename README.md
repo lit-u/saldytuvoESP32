@@ -6,7 +6,7 @@ IoT virtuvės terminalas šeimai, ESP32-S3-CAM-OVxxxx (Waveshare) plokštėje. P
 
 P10 / Android 9 veikia Kotlin AI serveris `:5000`. Greta jo Termux su wake lock ir runit prižiūri SSH `:8022` bei Ubuntu/proot aplinkoje veikiantį Home Assistant Core `:8123`. Tailscale skirtas nuotolinei prieigai; laptopo vietiniam ryšiui šiuo metu naudojamas laikinas Wi-Fi maršrutas.
 
-Termux/SSH/HA atsistatymas po tikro Android reboot patvirtintas. Kotlin `BOOT_COMPLETED` **implemented, reboot verification pending**: kodas įdiegtas, duomenys išsaugoti, `/health` ir trys recognition testai PASS, tačiau antras reboot dar neatliktas. ESP32 `/admin` pasiekiamas iš P10 ir laptopo per Wi-Fi.
+**P10 24/7 server boot chain — VERIFIED.** Antras kontroliuojamas Android reboot PASS: Kotlin `BOOT_COMPLETED`, Termux:Boot, wake lock, runit, SSH ir HA atsistatė be rankinio programų paleidimo. Kotlin `/health`, trys recognition testai ir HA pilna inicializacija PASS. ESP32 `/admin` pasiekiamas iš P10 ir laptopo per Wi-Fi. Šiame P10 ADB po boot prieinamumui patvirtintas EMUI nustatymas „Allow ADB debugging in charge only mode“ (dabar ON).
 
 **P10 posistemio SOURCE OF TRUTH: [docs/P10_SERVER.md](docs/P10_SERVER.md)** — architektūra, versijos, tikrieji keliai, diagnostika, testai ir TODO. Žemiau išsaugoti ankstesnių sesijų įrašai yra darbų istorija; jų tuometinės būsenos teiginiai nepakeičia šios dabartinės santraukos ir P10 dokumento.
 

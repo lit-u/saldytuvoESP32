@@ -2,7 +2,7 @@
 
 Atnaujinta 2026-09-19. Šis dokumentas aprašo faktinę P10 serverio posistemio būseną ir turi pirmenybę prieš pasenusius P10 būsenos teiginius README sesijų istorijoje. Istoriniai testai nėra pažadas, kad paslauga visada pasiekiama; diagnostikos komandos pateiktos žemiau.
 
-**Kotlin BOOT_COMPLETED kodas įdiegtas, bet veikimas po tikro reboot dar NEPATVIRTINTAS (NOT TESTED). Antras kontroliuojamas reboot neatliktas.** Termux/HA grandinė pirmą tikrą reboot jau išlaikė.
+**P10 24/7 server boot chain — VERIFIED. Antras kontroliuojamas Android reboot PASS:** Kotlin AI serveris, SSH ir HA atsistatė automatiškai, programų ir servisų rankiniu būdu nepaleidžiant. Kotlin BOOT_COMPLETED veikimas patvirtintas paslaugos paleidimo laiku ir veikiančiu :5000; tiesioginio receiver iškvietimo log įrašo neišliko.
 
 ## Architektūra ir versijos
 
@@ -70,19 +70,26 @@ Esamas `start.sh` aktyvina venv per PATH, nustato atskirą uv cache, riboja uv l
 
 Runit paleidžia procesą iš naujo tiek po HA restart exit code 100, tiek po netikėtos baigties. `finish` laukia 5 s po bent 60 s veikusio proceso; trumpai iš eilės krentančiam procesui laukimas didėja 10/20/40/60 s. Tai riboja restart ciklą. Pakartotinis boot skripto paleidimas tikrintas: papildomų SSH/HA kopijų nesukuria.
 
-Runit neišgyvens viso Termux Android proceso/UID sustabdymo; tai nėra Android apribojimų apėjimas. Po boot gali reikėti įprasto pirmo telefono atrakinimo. Boot testas nepatvirtina veikimo iki pirmo atrakinimo.
+Runit neišgyvens viso Termux Android proceso/UID sustabdymo; tai nėra Android apribojimų apėjimas. Šis P10 neturi PIN ar slaptažodžio: vartotojo patvirtinimu, po antro reboot telefono nelietė, o visi trys serveriai atsistatė. Pirmo atrakinimo hipotezė ADB problemai šiame teste netiko; žr. EMUI diagnostiką žemiau. Bandymas neapima kitokios, PIN apsaugotos telefono konfigūracijos.
 
 ### Kotlin boot pakeitimas
 
 - [AndroidManifest.xml](../android-server/app/src/main/AndroidManifest.xml): `RECEIVE_BOOT_COMPLETED` ir neeksportuotas `BootCompletedReceiver` su `BOOT_COMPLETED` intent filter.
 - [BootCompletedReceiver.kt](../android-server/app/src/main/java/lt/saldytuvas/recognizer/BootCompletedReceiver.kt): tikrina intent action, per `ContextCompat.startForegroundService` paleidžia esamą `RecognitionForegroundService` (Android 9 suderinamas kelias).
 - Paslauga iškart kviečia `startForeground`; esamas `server == null` saugiklis neleidžia pakartotinai sukurti NanoHTTPD serverio. Recognition, ML Kit, TFLite, API, `:5000` ir paslaugos architektūra nepakeisti.
-- Pirmo reboot metu Kotlin nepasileido: tuo metu receiver dar nebuvo. Vėlesnis APK atnaujinimas įdiegė receiver, bet nebuvo antro reboot.
-- Po atnaujinimo Kotlin paleistas per esamą programos mygtuką regresijos testams. Šis rankinis startas **nėra autostart įrodymas**.
+- Pirmo reboot metu Kotlin nepasileido: tuo metu receiver dar nebuvo. Vėlesnis APK atnaujinimas įdiegė receiver; antras kontroliuojamas reboot patvirtino automatinį paleidimą — **PASS**.
+- Po APK atnaujinimo, dar prieš antrą reboot, Kotlin buvo paleistas per esamą programos mygtuką regresijos testams. Per patį antrą reboot testą Kotlin ir Termux programos bei servisai **rankiniu būdu nepaleisti**.
+- Tiesioginio receiver iškvietimo įrašo prieinamuose loguose neišliko. Automatinį paleidimą patvirtina `RecognitionForegroundService` sukūrimo laikas boot pradžioje, `isForeground=true` ir veikiantis :5000 be rankinio programos paleidimo.
 
 ### EMUI
 
 Vartotojas patvirtino tiek Termux, tiek „Saldytuvo atpazinimas“ programoms: **Manage manually → Auto-launch ON, Secondary launch ON, Run in background ON**. Android battery optimization išimtys patikrintos abiem programoms; Kotlin `RUN_IN_BACKGROUND` default allow. Termux wake lock realiai stebėtas per `dumpsys power`. EMUI apsaugos neapeinamos, Android root nenaudojamas.
+
+### ADB po reboot — patvirtintas praktinis sprendimas šiame P10
+
+Po antro reboot serveriai jau veikė, bet `adbd=stopped`. Windows matė USB įrenginį be klaidų (error code 0), tas pats laidas visą laiką buvo prijungtas. Laptopo `adb kill-server` / `start-server` nepadėjo. Aktyvi `sys.usb.config` buvo `hisuite,mtp,mass_storage`, nors išsaugota `persist.sys.usb.config` turėjo ir `adb`.
+
+Vartotojas patikrino: **USB debugging = ON**, **Allow ADB debugging in charge only mode = OFF**. Įjungus tik antrą nustatymą, neperjungiant USB režimo, nejudinant laido ir nedarant papildomo reboot, `adbd` iškart tapo `running`, aktyvi konfigūracija vėl įtraukė `adb`, ADB atsistatė. **Allow ADB debugging in charge only mode dabar ON.** Tai patvirtintas praktinis sprendimas šiame telefone; jis nebuvo reikalingas jau savarankiškai atsistačiusiems Kotlin, SSH ir HA servisams.
 
 ## Tikrieji failų keliai
 
@@ -138,10 +145,29 @@ Po pirmo reboot runit HA paleidimą užfiksavo 2026-09-19 08:32:50 EEST; pilna i
 | `GET /health` | PASS, HTTP 200, `status=ok` |
 | Trys nuoseklūs `POST /recognize` | PASS: 0.854 / 1.003 / 1.085 s; visi „Seimininkas“, distance 1.2753057479858398 |
 | HA HTTP / SSH po Kotlin atnaujinimo | PASS; esami procesai liko veikti |
-| Kotlin autostart po tikro reboot | **NOT TESTED** |
+| Kotlin autostart po tikro reboot | **PASS**, patvirtinta vėlesniu antru reboot; žr. žemiau |
 | Papildoma lint patikra | NOT COMPLETED; nutrauktas >10 min užtrukęs įrankio priklausomybių atsisiuntimas. APK build ir funkciniai testai PASS. |
 
 Originalus 10 recognition užklausų baseline prieš Linux/HA: min 1.159 s, median 1.378 s, average 1.430 s, max 1.920 s, HTTP klaidų 0/10. Atskirame palyginime su HA 2.110 s, be HA 2.092 s. Tai atskirų bandymų matavimai skirtingomis sąlygomis, ne formalus našumo pagerėjimo įrodymas.
+
+### Antras kontroliuojamas Android reboot — PASS
+
+Atliktas vienas šio bandymo reboot. Prieš jį `boot_id` buvo `48937aa8-f4ff-459f-a5b0-ee6ad3aebdbd`, uptime ~10 h 32 min. Po jo naujas `boot_id` — `75e83df4-a615-4d6d-995f-5e9dd60a8a2a`; jis nepasikeitė ir vėliau atkūrus ADB. Programos ir servisai po reboot rankiniu būdu nepaleisti.
+
+| Patikra | Galutinis rezultatas |
+|---|---|
+| Kotlin foreground service automatinis startas | PASS, PID 7602, `isForeground=true`; sukurtas boot pradžioje |
+| Kotlin `/health` :5000 | PASS, HTTP 200 |
+| Trys recognition testai po reboot | PASS: 2.770 / 1.971 / 2.060 s; visi „Seimininkas“, distance 1.2753057479858398 |
+| Termux:Boot → runit | PASS |
+| Wake lock | PASS, `termux:service-wakelock` aktyvus ~4 h 21 min galutinės patikros metu |
+| SSH :8022 su ED25519 raktu | PASS, PID 7577 |
+| HA :8123 ir pilna inicializacija | PASS, HTTP 200; runit proot PID 7578 |
+| ESP32 `/admin` iš P10 | PASS, HTTP 200 |
+| ESP32 `/admin` iš laptopo per Wi-Fi | PASS, HTTP 200 |
+| Android available RAM | 1,866,140 KiB (~1.78 GiB), galutinės patikros metu |
+
+HA paleidimas užfiksuotas 2026-09-19 19:06:07 EEST, pilna inicializacija 19:06:27 EEST (log'e 16:06:27 UTC, bootstrap 6.40 s). Galutinėje ADB patikroje uptime ~4 h 22 min, Kotlin paslauga ir wake lock veikė ~4 h 21 min. **Visų trijų serverių automatinė boot grandinė VERIFIED.** Tai konkretaus reboot ir stebėjimo laikotarpio patvirtinimas, ne neriboto nepertraukiamo veikimo garantija.
 
 ### ESP32
 
@@ -157,6 +183,7 @@ Ankstesnio reboot testo ESP32 FAIL priežastis, **vartotojo patvirtinimu**, buvo
 | Po Ubuntu, prieš HA | ~1.45 GiB | 39.87 GiB |
 | Ankstesnis minimalus HA bandymas | ~1.24 GiB; HA RSS ~190 MiB | vėlesniame HA etape ~37.35 GiB |
 | Po Kotlin boot APK atnaujinimo ir regresijos testų | 1,656,712 KiB (~1.58 GiB) | šiame etape iš naujo nematuota |
+| Po antro reboot, uptime ~4 h 22 min | 1,866,140 KiB (~1.78 GiB) | šiame etape iš naujo nematuota |
 
 ## Tinklas ir Windows maršrutas
 
@@ -224,7 +251,6 @@ Recognition testui naudoti lokaliai turimą leidžiamą JPEG, `POST /recognize`,
 
 ## Known issues / TODO
 
-- Atskirai autorizuotas tikras Kotlin BOOT_COMPLETED reboot testas: prieš reboot užfiksuoti boot_id, po reboot programų rankiniu būdu neatidaryti, patikrinti visą grandinę ir duomenis. **Dabar neatliktas.**
 - Nuolatinis Windows/Tailscale persidengiančių maršrutų sprendimas.
 - Tailscale realaus nuotolinio pasiekiamumo ir paleidimo po reboot patikra atskirai nuo LAN.
 - MQTT vėliau; HACS vėliau. Šie komponentai dabar neįdiegti.
@@ -235,4 +261,4 @@ Recognition testui naudoti lokaliai turimą leidžiamą JPEG, `POST /recognize`,
 
 Tikras šio laptopo projektas: `D:\_OldBoy_D\esp-32\saldytuvas` (vartotojo ankstesniuose pranešimuose kelias kartais užrašytas kitaip).
 
-Į šį pakeitimą įtraukiami tik README, šis dokumentas, Android manifestas ir boot receiveris. Privatūs SSH raktai, slaptažodžiai, API/Tailscale tokenai, HA `.storage`, APK, programos duomenys ir testinės šeimos nuotraukos neįtraukiami. Senas APK paliktas tik laptopo `%TEMP%\p10-kotlin-boot-update\before.apk`; pilnas privačių duomenų eksportas nebuvo atliktas. Atnaujinimo metu išlikimas tikrintas kontrolinėmis sumomis, ne uninstall/reinstall.
+Boot kodo checkpoint `8c9c4c080a52b7e31b0f9a3999ba42a9ee2f108f` apėmė README, šį dokumentą, Android manifestą ir boot receiverį. Galutinio reboot rezultato atnaujinimas keičia tik dokumentaciją. Privatūs SSH raktai, slaptažodžiai, API/Tailscale tokenai, HA `.storage`, APK, programos duomenys ir testinės šeimos nuotraukos neįtraukiami. Senas APK paliktas tik laptopo `%TEMP%\p10-kotlin-boot-update\before.apk`; pilnas privačių duomenų eksportas nebuvo atliktas. Atnaujinimo metu išlikimas tikrintas kontrolinėmis sumomis, ne uninstall/reinstall.
